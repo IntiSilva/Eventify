@@ -1,0 +1,36 @@
+import Navbar from "@/components/Navbar";
+import { cookies } from 'next/headers';
+import { SearchContextProvider } from "@/contexts/SearchContext";
+import { EventsContextProvider } from "@/contexts/EventsContext";
+import { ViewerTzProvider } from '@/contexts/ViewerTzContext';
+import SWRProvider from "@/components/providers/SWRProvider";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { MenuContextProvider } from "@/contexts/MenuContext";
+
+
+export default async function DashboardLayout({
+  children,
+}: { children: React.ReactNode }) {
+  const cookieStore = await cookies();
+  const cookieTz = cookieStore.get('viewerTz')?.value ?? 'UTC';
+  return (
+    <>
+    <ViewerTzProvider initialViewerTz={cookieTz}>
+      <SWRProvider>
+        <EventsContextProvider>
+          <SearchContextProvider>
+             <TooltipProvider delayDuration={100} skipDelayDuration={300}>
+         <MenuContextProvider>
+          <Navbar />
+          <main className="flex-1 pt-[65px] pb-6">
+            {children}
+          </main>
+        </MenuContextProvider>
+      </TooltipProvider>
+    </SearchContextProvider>
+      </EventsContextProvider>
+        </SWRProvider>
+          </ViewerTzProvider>
+    </>
+  );
+}

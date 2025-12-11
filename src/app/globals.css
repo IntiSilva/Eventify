@@ -1,0 +1,561 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+
+/* --- Keyframes --- */
+@keyframes gradient-shimmer {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes bg-shine {
+  from { background-position: 0 0; }
+  to   { background-position: -200% 0; }
+}
+
+@keyframes moveBadgeBlob1 {
+  0% { transform: translate(0, 0); }
+  25% { transform: translate(40px, -10px); }
+  50% { transform: translate(20px, 20px); }
+  75% { transform: translate(-20px, -15px); }
+  100% { transform: translate(0, 0); }
+}
+
+@keyframes moveBadgeBlob2 {
+  0% { transform: translate(-30px, 15px); }
+  50% { transform: translate(10px, -20px); }
+  75% { transform: translate(30px, 10px); }
+  100% { transform: translate(0, 0); }
+}
+
+@keyframes moveButtonBlob1 {
+  0%   { transform: translate(0, 0); }
+  33%  { transform: translate(42px, -10px); }
+  66%  { transform: translate(14px, 30px); }
+  100% { transform: translate(56px, 6px); }
+}
+
+@keyframes moveButtonBlob2 {
+  0%   { transform: translate(0, 0); }
+  25%  { transform: translate(-18px, 28px); }
+  50%  { transform: translate(32px, 10px); }
+  75%  { transform: translate(8px, -26px); }
+  100% { transform: translate(48px, 18px); }
+}
+
+@keyframes ugb_floating_points {
+  0%   { transform: translateY(0); }
+  85%  { opacity: 0; }
+  100% { transform: translateY(calc(var(--ugb-travel, 55px) * -1)); opacity: 0; }
+}
+
+/* Simple event card */
+/* Infinite (or limited) float with variables — does NOT touch transform directly */
+@keyframes card-float-x {
+  0%, 100% { --float-x: 8deg; } /* same value you had */
+  50%      { --float-x: -8deg; }
+}
+@keyframes card-float-y {
+  0%, 100% { --float-y: 6deg; }
+  50%      { --float-y: -6deg; }
+}
+
+/* --- Collapsible (Radix): uses --radix-collapsible-content-height --- */
+@keyframes collapsible-down {
+  from { height: 0; opacity: 0 }
+  to   { height: var(--radix-collapsible-content-height); opacity: 1 }
+}
+@keyframes collapsible-up {
+  from { height: var(--radix-collapsible-content-height); opacity: 1 }
+  to   { height: 0; opacity: 0 }
+}
+
+
+/* --- Theme tokens --- */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-figtree);
+  --font-heading: var(--font-jakarta);
+  --font-display: var(--font-michroma);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --breakpoint-xs2: 375px;
+  --breakpoint-xs3: 390px;
+  --breakpoint-xs4: 410px;
+  --breakpoint-2xl: 1440px;
+  --breakpoint-3xl: 1536px;
+
+  /* --- Definitions for 4xs --- */
+  --text-4xs: 0.375rem;             /* 6px */
+  --text-4xs--line-height: 0.5rem;  /* 8px */
+
+  /* --- Definitions for 3xs --- */
+  --text-3xs: 0.5rem;               /* 8px */
+  --text-3xs--line-height: 0.75rem; /* 12px */
+
+  /* --- Definitions for 2xs --- */
+  --text-2xs: 0.625rem;             /* 10px */
+  --text-2xs--line-height: 0.875rem;/* 14px */
+
+  --duration-shimmer: 3s;
+  --iteration-shimmer: infinite;
+  --animate-gradient-shimmer: gradient-shimmer ease var(--duration-shimmer) var(--iteration-shimmer);
+
+  /* Text-shine */
+  --animate-bg-shine: bg-shine 4s cubic-bezier(.15, 0, .2, 1) infinite;
+
+  /* --- VARIABLES FOR BORDER ANIMATION --- */
+  --duration-border-spin: 5s;
+  --iteration-border-spin: infinite;
+  --direction-border-spin: reverse;
+
+  /* Uses Tailwind's built-in 'spin' keyframes */
+  --animate-border-spin: spin
+    var(--duration-border-spin)
+    linear
+    var(--direction-border-spin)
+    var(--iteration-border-spin);
+
+  /* --- Collapsible (timing/curve tokens) --- */
+  --duration-collapsible-in: 300ms;
+  --duration-collapsible-out: 200ms;
+  --ease-collapsible: cubic-bezier(.22, 1, .36, 1);
+
+  /* --- Animation shorthands using the keyframes above --- */
+  --animate-collapsible-down:
+    collapsible-down var(--duration-collapsible-in) var(--ease-collapsible) both;
+  --animate-collapsible-up:
+    collapsible-up var(--duration-collapsible-out) var(--ease-collapsible) both;
+}
+
+
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.129 0.042 264.695);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.129 0.042 264.695);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.129 0.042 264.695);
+  --primary: oklch(0.208 0.042 265.755);
+  --primary-foreground: oklch(0.984 0.003 247.858);
+  --secondary: oklch(0.968 0.007 247.896);
+  --secondary-foreground: oklch(0.208 0.042 265.755);
+  --muted: oklch(0.968 0.007 247.896);
+  --muted-foreground: oklch(0.554 0.046 257.417);
+  --accent: oklch(0.968 0.007 247.896);
+  --accent-foreground: oklch(0.208 0.042 265.755);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.929 0.013 255.508);
+  --input: oklch(0.929 0.013 255.508);
+  --ring: oklch(0.704 0.04 256.788);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.984 0.003 247.858);
+  --sidebar-foreground: oklch(0.129 0.042 264.695);
+  --sidebar-primary: oklch(0.208 0.042 265.755);
+  --sidebar-primary-foreground: oklch(0.984 0.003 247.858);
+  --sidebar-accent: oklch(0.968 0.007 247.896);
+  --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
+  --sidebar-border: oklch(0.929 0.013 255.508);
+  --sidebar-ring: oklch(0.704 0.04 256.788);
+}
+
+
+
+
+/* --- Base layer --- */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  ::selection {
+    @apply bg-emerald-400/35 text-emerald-50;
+  }
+  ::-moz-selection {
+    @apply bg-emerald-400/35 text-emerald-50;
+  }
+
+
+  /*
+   * Keep layout width stable across modal open/close.
+   * Modern browsers reserve the scrollbar space with `scrollbar-gutter: stable`,
+   * so opening a dialog (which locks body scroll) does NOT change the viewport width.
+   */
+  html { scrollbar-gutter: stable; }
+
+  /*
+   * Never allow horizontal scrolling caused by sub-pixel overflows
+   * (full-bleed sections, shadows, transforms, DPR rounding, etc.).
+   * `clip` cleanly cuts overflow without creating a new formatting context.
+   * Fallback to `hidden` where `clip` isn't supported.
+   */
+  html, body { overflow-x: clip; }
+  @supports not (overflow: clip) { html, body { overflow-x: hidden; } }
+
+  /*
+   * React Remove Scroll (used by Radix Dialog) may inject inline padding-right/margin-right
+   * on <body> to compensate for the missing scrollbar when scroll is locked.
+   * With `scrollbar-gutter: stable` this compensation is not needed and creates a visible gap.
+   * The rules below aggressively neutralize any of those inline styles/classes while
+   * the dialog is open, ensuring there is no “gap” on the right edge.
+   */
+  html.dialog-open body,
+  body.react-remove-scroll-bar,
+  body.react-remove-scroll-body,
+  body[style*="padding-right"],
+  body[style*="margin-right"] {
+    padding-right: 0 !important;
+    margin-right: 0 !important;
+    --removed-body-scroll-bar-size: 0 !important; /* library-specific variable */
+  }
+
+  /* Neutralize the “compensation” injected by react-remove-scroll when locking scroll */
+  html.dialog-open body[data-scroll-locked],
+  body[data-scroll-locked],
+  body.react-remove-scroll-bar[data-scroll-locked] {
+    padding-right: 0 !important;
+    margin-right: 0 !important;
+    --removed-body-scroll-bar-size: 0 !important;
+  }
+}
+
+
+/* Hide the document scrollbar ONLY on /agenda
+   Requires the /agenda layout to wrap with [data-agenda-page].
+   Desktop-only: limited to >=768px.*/
+@supports selector(html:has(body)) {
+  @media (min-width: 768px) {
+    html:has([data-agenda-page]) {
+      /* Firefox / Edge Legacy */
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+
+      /* Override the global gutter so the reserved “gap” isn’t kept */
+      scrollbar-gutter: auto;
+    }
+    /* WebKit / Chromium */
+    html:has([data-agenda-page])::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
+      background: transparent;
+    }
+  }
+}
+
+
+/* --- UGB: component styles --- */
+@layer components {
+  .ugb-points {
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    overflow: hidden;
+  }
+
+  /* dots */
+  .ugb-points .point {
+    position: absolute;
+    bottom: -10px;
+    width: 2px;
+    height: 2px;
+    border-radius: 9999px;
+    background-color: var(--ugb-point-color, #fff);
+    animation-name: ugb_floating_points;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+  }
+
+  /* offsets/durations/delays from the original snippet */
+  .ugb-points .point:nth-child(1)  { left: 10%; opacity: 1;   animation-duration: 2.35s; animation-delay: 0.2s; }
+  .ugb-points .point:nth-child(2)  { left: 30%; opacity: 0.7; animation-duration: 2.5s;  animation-delay: 0.5s; }
+  .ugb-points .point:nth-child(3)  { left: 25%; opacity: 0.8; animation-duration: 2.2s;  animation-delay: 0.1s; }
+  .ugb-points .point:nth-child(4)  { left: 44%; opacity: 0.6; animation-duration: 2.05s; }
+  .ugb-points .point:nth-child(5)  { left: 50%; opacity: 1;   animation-duration: 1.9s; }
+  .ugb-points .point:nth-child(6)  { left: 75%; opacity: 0.5; animation-duration: 1.5s;  animation-delay: 1.5s; }
+  .ugb-points .point:nth-child(7)  { left: 88%; opacity: 0.9; animation-duration: 2.2s;  animation-delay: 0.2s; }
+  .ugb-points .point:nth-child(8)  { left: 58%; opacity: 0.8; animation-duration: 2.25s; animation-delay: 0.2s; }
+  .ugb-points .point:nth-child(9)  { left: 98%; opacity: 0.6; animation-duration: 2.6s;  animation-delay: 0.1s; }
+  .ugb-points .point:nth-child(10) { left: 65%; opacity: 1;   animation-duration: 2.5s;  animation-delay: 0.2s; }
+
+  /* accessibility */
+  @media (prefers-reduced-motion: reduce) {
+    .ugb-points .point { animation: none !important; }
+  }
+}
+
+
+/* --- Clerk overrides --- */
+@layer clerk {
+  /* =========================================================
+     1) Cards: default black everywhere EXCEPT SignIn/SignUp
+     ========================================================= */
+  /* Default: ALL cards are black (loaders, modals, verification, profile, etc.) */
+  .cl-rootBox:not(.cl-signIn-root):not(.cl-signUp-root) .cl-card {
+    background: #000 !important;
+    box-shadow: none !important;
+  }
+  /* If Clerk paints a decorative gradient on top of the card */
+  .cl-rootBox:not(.cl-signIn-root):not(.cl-signUp-root) .cl-card::after {
+    display: none !important;
+  }
+  /* Exception: keep glass on SignIn / SignUp */
+  /* In mobile view we don't use backdrop blur behind the card so we use a black with reduced opacity */
+  .cl-signIn-root .cl-card,
+  .cl-signUp-root .cl-card {
+    background: rgba(0, 0, 0, 0.8) !important;
+  }
+
+  @media (min-width: 768px) {
+    .cl-signIn-root .cl-card,
+    .cl-signUp-root .cl-card {
+      background: transparent!important; /* ~ bg-black/80 */
+    }
+  }
+
+  /* =========================================================
+     2) Footers
+     ========================================================= */
+  /* SignIn/SignUp footer must also remain transparent (glass pages) */
+  /* There's a page-level override too, but Clerk's footer may ignore it */
+  [data-clerk-component="SignIn"] .cl-footer,
+  [data-clerk-component="SignUp"] .cl-footer,
+  [data-clerk-component="SignIn"] [data-clerk-element="footer"],
+  [data-clerk-component="SignUp"] [data-clerk-element="footer"] {
+    background: transparent !important;
+  }
+
+  /* UserProfile footer (general) */
+  .cl-userProfile-root .cl-footer,
+  .cl-userProfile-root [data-clerk-element="footer"] {
+    background: #000 !important;
+  }
+
+  /* Verification flow footers (Password + Alternative methods) */
+  .cl-userVerification-root .cl-footer,
+  .cl-userVerification-root [data-clerk-element="footer"] {
+    background: #000 !important;
+  }
+
+  /* =========================================================
+     3) UserProfile navbar surfaces
+     ========================================================= */
+  .cl-userProfile-root .cl-navbar { background: #000 !important; }
+  .cl-userProfile-root .cl-navbarMobileMenuRow { background: #000 !important; }
+
+  /* =========================================================
+     4) User button popover / loader palette
+     ========================================================= */
+  .clk-popover-main {
+    background-color: #000000 !important;
+  }
+
+  /* Popover actions (color / background / radius / hover) */
+  .clk-popover-action {
+    border-radius: 0.25rem !important;
+    color: #d4d4d8 !important;
+    font-weight: 400 !important;
+    transition: background-color .15s ease, color .15s ease !important;
+  }
+  .clk-popover-action:hover {
+    background: rgba(16,185,129,0.18) !important;
+    color: #ffffff !important;
+  }
+
+  .clk-popover-action-icon {
+    color: #a1a1aa !important;
+    transition: color .15s ease !important;
+  }
+  .clk-popover-action:hover .clk-popover-action-icon {
+    color: #ffffff !important;
+  }
+
+  .clk-popover-footer {
+    background: #000000 !important;
+  }
+
+  .clk-loader {
+    color: rgba(16,185,129,0.85) !important;
+  }
+
+  /* =========================================================
+     5) Custom CTA button used inside Clerk
+     ========================================================= */
+  .my-clerk-button {
+    /* 1) Override Clerk’s shadow. Use !important to ensure precedence. */
+    box-shadow: none !important;
+
+    /* 2) Our background + transition */
+    background-color: black !important;
+    transition: background-color 0.2s ease-in-out !important;
+    border-width: 1px !important;
+    border-color: rgba(255, 255, 255, 0.11) !important;
+  }
+  /* 3) Remove gradient pseudo-element */
+  .my-clerk-button::after {
+    display: none !important; /* Most effective way to remove it */
+  }
+  /* 4) Hover state */
+  .my-clerk-button:hover {
+    background-color: white !important;
+  }
+  .my-clerk-button span {
+    /* Ensure it overrides any Clerk color */
+    color: white !important;
+    transition: color 0.2s ease-in-out !important; /* Smooth text color transition */
+  }
+  /* Span when parent button is hovered */
+  .my-clerk-button:hover span {
+    color: black !important;
+  }
+
+  /* =========================================================
+     6) Mobile (reassert, in case Clerk has its own @media)
+     ========================================================= */
+  @media (max-width: 768px) {
+    .cl-userProfile-root .cl-footer,
+    .cl-userProfile-root [data-clerk-element="footer"] {
+      background: #000 !important;
+    }
+    .clk-card-box {
+      height: auto !important;
+    }
+  }
+}
+
+
+
+/* --- Utilities --- */
+@layer utilities {
+  /* Infinite version */
+  .animate-card-float {
+    --float-x: 0deg;
+    --float-y: 0deg;
+    animation:
+      card-float-x 12s ease-in-out infinite alternate,
+      card-float-y 11s ease-in-out infinite alternate;
+    will-change: transform;
+  }
+
+  /* Limited to 60 cycles (if needed) */
+  .animate-card-float-60 {
+    --float-x: 0deg;
+    --float-y: 0deg;
+    animation:
+      card-float-x 12s ease-in-out 60 alternate,
+      card-float-y 11s ease-in-out 60 alternate;
+    will-change: transform;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-card-float,
+    .animate-card-float-60 { animation: none; }
+  }
+
+  [data-sonner-toast] > [data-icon] {
+    width: 24px !important;
+    height: 24px !important;
+    flex: 0 0 24px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  /* Border shine (no overflow), subtle and elegant */
+  .shine-border {
+    position: relative;
+    border-radius: .75rem; /* ~ rounded-xl */
+
+    /* final intensity (slightly lighter than the previous one) */
+    --sb-white: rgba(212, 212, 216, .38);
+    --sb-mid:   rgba(63, 63, 70, .52);
+    --sb-peak:  rgba(255, 255, 255, .30);
+    --sb-op:    .66;
+    --sb-size:  225%;
+    --sb-pad:   1.75px; /* final thickness */
+  }
+  .shine-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    padding: var(--sb-pad);
+    background: linear-gradient(
+      110deg,
+      var(--sb-white) 0%,
+      var(--sb-white) 42%,
+      var(--sb-mid)   48%,
+      var(--sb-peak)  52%,
+      var(--sb-white) 60%,
+      var(--sb-white) 100%
+    );
+    background-size: var(--sb-size) 100%;
+    animation: bg-shine 3.2s linear infinite; /* already defined in your app */
+    opacity: var(--sb-op);
+
+    /* mask: border-only, without cutting the 3D */
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    z-index: 1;
+  }
+
+  /* Fallback if mask-composite is not supported */
+  @supports not (-webkit-mask-composite: xor) {
+    .shine-border::before { display: none; }
+    .shine-border { outline: 1px solid rgba(255, 255, 255, .06); }
+  }
+
+  .skeleton {
+    @apply rounded bg-white/10 animate-pulse;
+  }
+}

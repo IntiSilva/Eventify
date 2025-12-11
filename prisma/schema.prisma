@@ -1,0 +1,148 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+enum ReminderType {
+  FORTY_EIGHT_HOURS
+  SAME_DAY
+  MINUTES_BEFORE
+}
+
+enum ContactPhoneApps {
+  whatsapp
+  telegram
+  both
+}
+
+enum UserRole {
+  admin
+  organizer
+  user
+}
+
+enum EventCategory {
+  music
+  sports
+  education
+  tech
+  health
+  art
+  nightlife
+  gastronomy
+  films
+  theater
+  fitness
+  business
+  finance
+  fashion
+  travel
+  gaming
+  workshop
+}
+
+
+enum RSVPStatus {
+  pending
+  confirmed
+  canceled
+}
+
+model User {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  username  String    @unique @db.VarChar(25)
+  normalizedUsername  String   @unique @db.VarChar(25)
+
+  
+  clerkId   String    @unique
+  role      UserRole  @default(user)
+
+  //Data for avatar component
+  firstName String?   @db.VarChar(50)
+  lastName  String?   @db.VarChar(50)
+  imageUrl  String?
+  hasImage  Boolean?
+
+  phoneNumber String? @unique @db.VarChar(30)
+
+  rsvps     RSVP[]
+  createdAt DateTime @default(now())
+
+  createdEvents Event[] @relation("UserCreatedEvents")
+
+
+}
+
+model Event {
+  id          String   @id @default(cuid())
+  title       String   @db.VarChar(60)
+  normalizedTitle String?  
+
+  description String
+  date        DateTime
+  eventTimeZone         String  @db.VarChar(50)
+  eventLocalDateKey     Int
+  eventLocalMinuteOfDay Int
+  location    String   @db.VarChar(255)
+  normalizedLocation String?
+
+  category    EventCategory
+  featured    Boolean   @default(false)
+  featuredByAdmin Boolean     @default(false)
+
+
+  createdBy   String 
+  creator     User   @relation("UserCreatedEvents", fields: [createdBy], references: [clerkId], onDelete: Cascade)
+
+  contactEmail  String?
+  contactPhone  String?
+  contactPhoneApps ContactPhoneApps?
+
+  rsvps       RSVP[]
+  createdAt   DateTime @default(now())
+
+
+  @@index([normalizedTitle])
+  @@index([normalizedLocation])
+  //Index for the cleanup function
+  @@index([date])
+  @@index([eventLocalDateKey])
+}
+
+model RSVP {
+  id      String @id @default(cuid())
+  userId  String
+  eventId String
+  status  RSVPStatus @default(pending)
+
+  user  User  @relation(fields: [userId], references: [clerkId], onDelete: Cascade)
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  reminderPreferenceType ReminderType?
+  reminderOffsetMinutes  Int?
+  reminderScheduledAt    DateTime?
+  reminderSentAt         DateTime?
+  // -----------------------------------------
+
+  @@unique([userId, eventId])
+}
