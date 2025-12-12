@@ -73,6 +73,7 @@ export default clerkMiddleware(async (auth, req: NextRequest) => {
     return NextResponse.next()
   }
   if (pathname.startsWith('/api/webhooks/')) return NextResponse.next()
+  if (pathname.startsWith('/api/cron/')) return NextResponse.next();
 
   // Public → go through
   if (isPublicRoute(req)) return NextResponse.next()
