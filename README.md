@@ -1,7 +1,6 @@
 # Eventify
 
-[![CI](https://img.shields.io/badge/CI-passing-success?style=flat-square)](#)
-[![Deployment](https://img.shields.io/badge/Deployed-Vercel-informational?style=flat-square)](#)
+[![Deployment](https://img.shields.io/badge/Deployed-Vercel-informational?style=flat-square)](https://eventifylive.vercel.app)
 
 Modern event discovery and management platform built with Next.js, Clerk, Prisma, and Tailwind CSS.  
 Eventify lets admins and organizers publish events, collect RSVPs, and send automated reminders while giving attendees rich search, filtering, an animation-rich browsing experience, and agenda tools.
@@ -10,14 +9,14 @@ Eventify lets admins and organizers publish events, collect RSVPs, and send auto
 
 ## Demo & Screenshots
 
-- **Live demo**: _coming soon_  
-- **Storybook / component playground**: _coming soon_
+- **Live demo**: [https://eventifylive.vercel.app](https://eventifylive.vercel.app)
 
-**Screenshots (placeholders):**
+**Screenshots:**
 
 - ![Home page](./docs/screenshots/Screenshot-Home.png)
 - ![Event menu](./docs/screenshots/Screenshot-Menu.png)
 - ![Agenda / TiltedInfiniteList](./docs/screenshots/Screenshot-Agenda.png)
+- ![Admin Panel](./docs/screenshots/Screenshot-Admin-Panel.png)
 
 ---
 

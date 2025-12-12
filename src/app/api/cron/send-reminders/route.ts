@@ -24,18 +24,15 @@ const cronSecret = process.env.CRON_SECRET;
 export async function GET(request: Request) {
   // --- Simple auth guard: requires "Authorization: Bearer <CRON_SECRET>"
   const authHeader = request.headers.get('authorization');
+
+  if (!cronSecret) {
+    return NextResponse.json(
+      { success: false, error: 'Missing CRON_SECRET.' },
+      { status: 500 }
+    );
+  }
   if (authHeader !== `Bearer ${cronSecret}`) {
     console.warn('Unauthorized attempt to access the reminder cron job.');
-    const body: ApiErrorResponse = { success: false, error: 'Unauthorized' };
-    return NextResponse.json(body, { status: 401 });
-  }
-
-  // --- Second guard: requires ?secret=<CRON_SECRET> in the URL
-  const { searchParams } = new URL(request.url);
-  const secret = searchParams.get('secret');
-
-  if (secret !== cronSecret) {
-    console.warn(`CRON: Unauthorized access attempt.`);
     const body: ApiErrorResponse = { success: false, error: 'Unauthorized' };
     return NextResponse.json(body, { status: 401 });
   }
