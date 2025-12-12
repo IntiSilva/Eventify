@@ -9,7 +9,6 @@
     "start": "next start",
     "prod": "npm run build && npm run start",
     "lint": "next lint",
-    "preview:email": "tsx scripts/preview-email.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ci": "vitest run --coverage",
