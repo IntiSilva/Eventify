@@ -19,6 +19,8 @@ export type InfoTooltipProps = {
   ariaLabel?: string;
   side?: "top" | "right" | "bottom" | "left";
   align?: "center" | "start" | "end";
+  popoverSide?: "top" | "right" | "bottom" | "left";
+  popoverAlign?: "center" | "start" | "end";
   className?: string;
   size?: "sm" | "md";
   triggerMode?: "hover" | "click" | "both";
@@ -32,6 +34,8 @@ export default function InfoTooltip({
   ariaLabel = "Open info",
   side = "top",
   align = "center",
+  popoverSide,
+  popoverAlign,
   className,
   size = "sm",
   triggerMode = "both",
@@ -91,7 +95,7 @@ export default function InfoTooltip({
       type="button"
       aria-label={ariaLabel}
       className={cn(
-        "flex items-center justify-center rounded-full border bg-transparent text-emerald-700",
+        "flex items-center justify-center rounded-full border bg-transparent text-emerald-400",
         "border-zinc-800 shadow-sm transition-colors outline-none",
         "focus-visible:ring-2 focus-visible:ring-emerald-600/50 focus-visible:ring-offset-0",
         "hover:bg-zinc-900/30 cursor-pointer",
@@ -99,7 +103,15 @@ export default function InfoTooltip({
         className
       )}
     >
-      <span className="block w-full text-center font-semibold leading-none">i</span>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "inline-flex items-center justify-center font-semibold leading-none",
+          size === "sm" && "translate-x-[0.2px] md:translate-x-[0.5px] -translate-y-[0.5px]"
+        )}
+      >
+        i
+      </span>
     </button>
   );
 
@@ -109,8 +121,8 @@ export default function InfoTooltip({
       <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
         <PopoverTrigger asChild>{triggerNode}</PopoverTrigger>
         <PopoverContent
-          side={side}
-          align={align}
+          side={popoverSide ?? side}
+          align={popoverAlign ?? align}
           sideOffset={6}
           className={cn(
             "relative rounded-xl border p-3 text-sm leading-relaxed",

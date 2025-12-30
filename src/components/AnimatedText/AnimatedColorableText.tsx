@@ -1,7 +1,7 @@
 'use client';
 
 import React, { ElementType, useEffect, useMemo, useRef } from 'react';
-import { animate, stagger, useInView } from 'motion/react';
+import { animate, stagger, useInView, type AnimationPlaybackControls } from 'motion/react';
 import { cn } from '@/lib/utils';
 
 export type ColorableToken = {
@@ -28,6 +28,16 @@ interface AnimatedColorableTextProps {
   wordClassName?: string; // common styles for each animated unit (chars or words)
   accentClassName?: string; // styles for units with accent=true
   splitMode?: SplitMode;
+  /**
+   * Fires when the text animation for the current render has completed.
+   * In prefers-reduced-motion, fires immediately after styles are applied.
+   */
+  onAnimationComplete?: () => void;
+   /**
+   * Optional element rendered *inside the last word wrapper*.
+   * Useful for an absolute-positioned loader that follows the last line wrap.
+   */
+  trailingAddon?: React.ReactNode;
 }
 
 export default function AnimatedColorableText({
@@ -38,11 +48,14 @@ export default function AnimatedColorableText({
   wordClassName = 'inline-block opacity-0',
   accentClassName = 'text-emerald-400',
   splitMode = 'word',
+  onAnimationComplete,
+  trailingAddon,
 }: AnimatedColorableTextProps) {
   const HeadingTag = as as ElementType;
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const headingRef = useRef<HTMLHeadingElement>(null);
+  const headingRef = useRef<HTMLElement>(null);
+  const controlsRef = useRef<AnimationPlaybackControls | null>(null);
   const isInView = useInView(containerRef, { once: true });
 
   const units = useMemo<Unit[]>(() => {
@@ -86,8 +99,21 @@ export default function AnimatedColorableText({
     return out;
   }, [tokens]);
 
+  const lastWordIdx = useMemo(() => {
+    for (let i = units.length - 1; i >= 0; i--) {
+      if (units[i].type === 'word') return i;
+    }
+    return -1;
+  }, [units]);
+
+
   useEffect(() => {
     if (!isInView || !headingRef.current) return;
+
+    // If something re-triggers this effect (tokens/splitMode changed while in view),
+    // cancel the previous animation first.
+    controlsRef.current?.cancel();
+    controlsRef.current = null;
 
     const nodes = headingRef.current.querySelectorAll<HTMLElement>('[data-char]');
     if (!nodes.length) return;
@@ -103,6 +129,7 @@ export default function AnimatedColorableText({
         node.style.opacity = '1';
         node.style.transform = 'none';
       });
+      onAnimationComplete?.();
       return;
     }
 
@@ -111,7 +138,7 @@ export default function AnimatedColorableText({
       node.style.opacity = '0';
     });
 
-    animate(
+    const controls = animate(
       nodes,
       {
         opacity: [0, 1],
@@ -126,41 +153,57 @@ export default function AnimatedColorableText({
         stiffness: 200,
       }
     );
-  }, [isInView, tokens, splitMode]);
+     controlsRef.current = controls;
+
+    let cancelled = false;
+    controls.then(() => {
+      if (!cancelled) onAnimationComplete?.();
+    }).catch(() => {});
+
+    return () => {
+      cancelled = true;
+      controls.cancel();
+      if (controlsRef.current === controls) controlsRef.current = null;
+    };
+  }, [isInView, splitMode, onAnimationComplete]);
 
   return (
     <div ref={containerRef} className={containerClassName}>
       <HeadingTag ref={headingRef} className={headingClassName}>
         {units.map((u, idx) => {
           if (u.type === 'space') {
-            // In CHAR mode we render real spaces between word wrappers.
-            // In WORD mode we rely on &nbsp; inside the word spans instead.
-            if (splitMode === 'char') {
-              return ' ';
-            }
-            return null;
+            return (
+              <span key={u.key} aria-hidden="true">
+                {' '}
+              </span>
+            );
           }
 
+          const isLastWord = idx === lastWordIdx && !!trailingAddon;
           if (splitMode === 'char') {
             // CHAR MODE:
             // - Wrap each word in an inline-block span so the word never breaks.
             // - Inside that wrapper, we render one <span data-char> per letter
             //   so we still get character-by-character animation.
-            return (
-              <span
-                key={u.key}
-                className={cn('inline-block', u.accent && accentClassName)}
-              >
-                {Array.from(u.text).map((ch, charIndex) => (
-                  <span
-                    key={`${u.key}-ch-${charIndex}`}
-                    data-char
-                    className={wordClassName}
-                  >
-                    {ch}
-                  </span>
-                ))}
-              </span>
+
+
+              return (
+                <span
+                  key={u.key}
+                  className={cn('inline-block', isLastWord && 'relative', u.accent && accentClassName)}
+                >
+                  {Array.from(u.text).map((ch, charIndex) => (
+                    <span
+                      key={`${u.key}-ch-${charIndex}`}
+                      data-char
+                      className={wordClassName}
+                    >
+                      {ch}
+                    </span>
+                  ))}
+
+                  {isLastWord ? trailingAddon : null}
+                </span>
             );
           }
 
@@ -172,12 +215,16 @@ export default function AnimatedColorableText({
             <span
               key={u.key}
               data-char
-              className={cn(wordClassName, u.accent && accentClassName)}
+              className={cn(wordClassName, isLastWord && 'relative', u.accent && accentClassName)}
             >
               {u.text}
-              {idx !== units.length - 1 && (
+
+              {/* tu &nbsp; “pegador”, pero no lo metas en el último word si ahí va el addon */}
+              {idx !== units.length - 1 && !isLastWord && (
                 <span aria-hidden="true">&nbsp;</span>
               )}
+
+              {isLastWord ? trailingAddon : null}
             </span>
           );
         })}

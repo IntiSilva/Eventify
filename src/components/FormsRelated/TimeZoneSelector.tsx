@@ -61,10 +61,13 @@ export function TimeZoneSelector({
           where="creator-form"
           side="right"
           align="start"
+          popoverSide="top"
+          popoverAlign="start"
           size="sm"
           triggerMode="both"
           ariaLabel="Help to understand timezones"
           className='w-4 h-4 mt-[1px]'
+          maxWidth='max-w-xs md:max-w-sm'
         />
       </div>
 

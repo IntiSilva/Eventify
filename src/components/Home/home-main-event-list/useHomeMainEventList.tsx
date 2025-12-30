@@ -69,6 +69,8 @@ export type UseHomeMainEventListResult = {
   cardWidth: number;
   rotationFactor: number;
   activeZoneHalfWidth: number;
+
+  isAnyFilterActive: boolean;
 };
 
 /* ---------------------------------------------------------------------- */
@@ -116,7 +118,10 @@ const scheduleIdle = (cb: () => void) => {
 /* ---------------------------------------------------------------------- */
 /*  Hook                                                                  */
 /* ---------------------------------------------------------------------- */
-export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayload): UseHomeMainEventListResult {
+export function useHomeMainEventList(
+  initialEventsPayload: HomeMainInitialPayload,
+  scrollTopAnchorRef?: { current: HTMLElement | null }
+): UseHomeMainEventListResult {
   /* ------------------------------- Local ------------------------------ */
   const [currentPage, setCurrentPage] = useState(1);
   const [visiblePage, setVisiblePage] = useState(1);
@@ -149,6 +154,7 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
   const listTopRef = useRef<HTMLDivElement>(null);
   const userPagingRef = useRef(false);
   const prefetchSigRef = useRef<string | null>(null);
+  // const scrollCancelRef = useRef<(() => void) | null>(null);
 
   // Progressive prefetch window tracking
   const prefetchedMaxRef = useRef<number>(1); // highest page currently prefetched for the “HOME” window
@@ -287,7 +293,12 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
     return () => unregisterMainListKey(apiUrl);
   }, [apiUrl, registerMainListKey, unregisterMainListKey]);
 
-  const shouldSkipRevalidateOnMount = !isAnyFilterActive && currentPage === 1 && hasRequested;
+  // If we have a usable SSR seed for page 1 (HOME mode), don't revalidate on mount.
+  // This prevents an extra CSR fetch on initial load when SSR payload is already present.
+  const hasSsrSeedForPage1 = useFallback && Boolean(swrFallback);
+
+  const shouldSkipRevalidateOnMount =
+    (!isAnyFilterActive && currentPage === 1 && hasRequested) || hasSsrSeedForPage1;
 
   const { error, isLoading, isValidating } = useSWR<ApiEventSuccess>(apiUrl, fetcher, {
     fallbackData: swrFallback,
@@ -364,8 +375,7 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
 
   /* ---------------------- Initial prefetch (2..5) --------------------- */
   useEffect(() => {
-    const nav = navigator as Navigator & { connection?: { saveData?: boolean } };
-    if (nav.connection?.saveData) return;
+    if (navigator.connection?.saveData) return;
     if (isAnyFilterActive) return;
     if (!seedDataLength) return;
     if (currentPage !== 1) return;
@@ -390,8 +400,13 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
 
     const run = async () => {
       try {
-        await Promise.all(
-          pages.map(async (page) => {
+        const CONCURRENCY = 2;
+        let idx = 0;
+
+        const worker = async () => {
+          while (!cancelled && idx < pages.length) {
+            const page = pages[idx++];
+
             const qs = buildPaginatedEventsURL({
               page,
               limit: PAGE_SIZE_MAIN,
@@ -419,7 +434,12 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
             });
 
             await (globalMutate as GlobalMutate)(url, res, { revalidate: false });
-          })
+          
+          }
+        };
+
+        await Promise.all(
+          Array.from({ length: Math.min(CONCURRENCY, pages.length) }, () => worker())
         );
 
         // mark initial prefetched window (up to 5 or up to totalPages)
@@ -495,8 +515,13 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
 
       const run = async () => {
         try {
-          await Promise.all(
-            pages.map(async (page) => {
+          const CONCURRENCY = 2;
+          let idx = 0;
+
+          const worker = async () => {
+            while (!cancelled && idx < pages.length) {
+              const page = pages[idx++];
+
               const qs = buildPaginatedEventsURL({
                 page,
                 limit: PAGE_SIZE_MAIN,
@@ -524,7 +549,12 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
               });
 
               await (globalMutate as GlobalMutate)(url, res, { revalidate: false });
-            })
+            
+            }
+          };
+
+          await Promise.all(
+            Array.from({ length: Math.min(CONCURRENCY, pages.length) }, () => worker())
           );
 
           prefetchedMaxRef.current = nextEnd; // advance the window
@@ -592,18 +622,40 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
     }
   }, [totalPagesFromMeta, visiblePage, currentPage]);
 
-  // Smooth scroll only if triggered by the pagination buttons
+  // Smooth scroll only if triggered by the pagination buttons.
+  // In mobile + search/filters, scroll to the stable anchor above SearchResultsTitle (passed from the wrapper).
   useEffect(() => {
     if (!userPagingRef.current) return;
     if (pagePending) return;
-    const el = listTopRef.current;
-    if (!el) { userPagingRef.current = false; return; }
 
-    requestAnimationFrame(() => {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+    const isMobileSearch = !isDesktop && isAnyFilterActive && Boolean(scrollTopAnchorRef?.current);
+    const target = isMobileSearch ? scrollTopAnchorRef!.current : listTopRef.current;
+
+    if (!target) {
       userPagingRef.current = false;
+      return;
+    }
+
+    // Desktop (or no filters): keep the existing behavior
+    if (!isMobileSearch) {
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+        userPagingRef.current = false;
+      });
+      return;
+    }
+
+    // Mobile + filters: defer slightly so layout settles (title wrap / address bar / fonts).
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+          userPagingRef.current = false;
+        }, 90);
+      });
     });
-  }, [visiblePage, pagePending]);
+  }, [visiblePage, pagePending, isDesktop, isAnyFilterActive, scrollTopAnchorRef]);
+
 
   // Viewport-driven "active card" for mobile: pick the item closest to screen center on scroll/resize
   useEffect(() => {
@@ -728,5 +780,7 @@ export function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayloa
     cardWidth,
     rotationFactor,
     activeZoneHalfWidth,
+
+    isAnyFilterActive,
   };
 }

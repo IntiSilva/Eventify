@@ -11,6 +11,7 @@ import {
   useMotionValueEvent,
   wrap,
   animate,
+  type AnimationPlaybackControls,
   type PanInfo,
   type Variants,
   type Transition,
@@ -303,7 +304,14 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
   /* ---------------- Read list & entities -------------- */
   const ids = useList(resolvedListName);
   const eventsFromStore = useEventsByIds(ids);
-  const idsKey = useMemo(() => ids.join('|'), [ids]);
+  // Prefer store ids, but fall back to SSR/prop fallbackData ids so the first paint can render a track.
+  const sourceIds = useMemo(() => {
+    if (ids.length) return ids;
+    if (fallbackData?.length) return fallbackData.map((e) => e.id);
+    return [];
+  }, [ids, fallbackData]);
+
+  const sourceIdsKey = useMemo(() => sourceIds.join('|'), [sourceIds]);
 
   const dataEvents = useMemo<EventWithCreatorAndRsvps[]>(() => {
     if (eventsFromStore.length) return eventsFromStore;
@@ -339,6 +347,13 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
     damping: currentBreakpoint === 'base' ? 40 : 46,
     mass: 2.8,
   });
+  const releaseAnimRef = useRef<AnimationPlaybackControls | null>(null);
+
+  const stopReleaseAnim = () => {
+    releaseAnimRef.current?.stop();
+    releaseAnimRef.current = null;
+  };
+
 
   /**
    * Rebuilds the window of visible cards whenever the "first visible index"
@@ -409,12 +424,13 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
   }, [viewportWidth, isEven, cardWidth, gap, dragX, dataEvents.length]);
 
   /* ---------------- First window build ----------------- */
+  
   /**
    * Build an initial window for SSR / first paint, based on the current dragX.
    * After this, the motion listener will keep it updated.
    */
   useEffect(() => {
-    if (ids.length === 0 || viewportWidth === 0) return;
+    if (sourceIds.length === 0 || viewportWidth === 0) return;
 
     const firstVisible = Math.floor((-dragX.get() - cardTotalWidth) / cardTotalWidth);
     const visibleCount =
@@ -422,8 +438,8 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
 
     const fresh = Array.from({ length: visibleCount }, (_, i) => {
       const cardIdx = firstVisible + i;
-      const evtIdx = wrap(0, ids.length, cardIdx);
-      const id = ids[evtIdx];
+      const evtIdx = wrap(0, sourceIds.length, cardIdx);
+      const id = sourceIds[evtIdx];
       return { id, index: cardIdx, renderIndex: i };
     });
 
@@ -440,7 +456,7 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
       });
     });
     return () => cancelAnimationFrame(id);
-  }, [ids, idsKey, viewportWidth, cardTotalWidth, dragX, dataEvents.length, RENDER_BUFFER]);
+  }, [sourceIds, sourceIdsKey, viewportWidth, cardTotalWidth, dragX, dataEvents.length, RENDER_BUFFER]);
 
   /* ---------------- One-time SSR hydration ------------- */
   /**
@@ -667,6 +683,7 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
   const handlePanStart = (e: PanEvent) => {
     const g = gestureState.current;
     const pid = getPointerId(e);
+    stopReleaseAnim();
 
     if (interactionDisabled) {
       resetGesture();
@@ -678,8 +695,10 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
     resetGesture();
     g.active = true;
     g.pointerId = pid;
-    // Remember where this drag started so we can clamp relative movement
-    g.dragStartX = dragX.get();
+    
+    const startX = smoothX.get();
+    dragX.set(startX);
+    g.dragStartX = startX;
   };
 
   const handlePan = (e: PanEvent, info: PanInfo) => {
@@ -780,25 +799,48 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
     }
   };
 
+  const clampNum = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
   const handlePanEnd = (e: PanEvent) => {
     const g = gestureState.current;
+
+    // Ignore pan-end events from a different pointer (multi-touch / stray events)
     const pid = getPointerId(e);
     if (g.pointerId !== null && pid !== null && pid !== g.pointerId) return;
 
-    if (g.skip || !g.active) { if (isDragging) setIsDragging(false); resetGesture(); return; }
-    if (g.lock !== 'x') { if (isDragging) setIsDragging(false); resetGesture(); return; }
+    // If we never actively started a valid drag, just cleanup.
+    if (g.skip || !g.active) {
+      if (isDragging) setIsDragging(false);
+      resetGesture();
+      return;
+    }
+
+    // If we didn't "lock" the gesture to X, do not snap the carousel (let scroll win).
+    if (g.lock !== 'x') {
+      if (isDragging) setIsDragging(false);
+      resetGesture();
+      return;
+    }
+
+    // We were dragging horizontally; end the dragging UI state.
     if (isDragging) setIsDragging(false);
 
     const totalDx = g.accX;
     const absTotalDx = Math.abs(totalDx);
 
     const el = containerRef.current;
-    if (!el || dataEvents.length === 0) { resetGesture(); return; }
+    if (!el || dataEvents.length === 0) {
+      resetGesture();
+      return;
+    }
 
+    // The X position where the "active" card should be centered/aligned.
+    // Even vs odd active-cards changes the center offset.
     const alignmentPoint = isEven
       ? el.offsetWidth / 2 - cardWidth - gap / 2
       : el.offsetWidth / 2 - cardWidth / 2;
 
+    // Spring used when snapping to the target slot.
     const releaseSpring: { type: 'spring'; stiffness: number; damping: number; mass: number } = {
       type: 'spring',
       stiffness: isDesktop ? 400 : 260,
@@ -806,45 +848,65 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
       mass: 1.1,
     };
 
-    // Small, slow gesture → just snap to the nearest card (no inertial jump)
-    if (absTotalDx < MIN_SNAP_DISTANCE && Math.abs(g.velocityX) < MIN_SNAP_VELOCITY) {
+    // Clamp velocity to avoid huge spikes that feel like a "slingshot" on mouse/touch.
+    // (velocity is px/s)
+    const vCap = isDesktop ? 2400 : 1700;
+    const v = clampNum(g.velocityX, -vCap, vCap);
+
+    // Cancel any previous release animation so it can't "fight" the new snap.
+    stopReleaseAnim();
+
+    // Small + slow gesture → just snap to nearest (no inertial jump).
+    if (absTotalDx < MIN_SNAP_DISTANCE && Math.abs(v) < MIN_SNAP_VELOCITY) {
       const currentX = dragX.get();
       const nearestIndex = Math.round((alignmentPoint - currentX) / cardTotalWidth);
       const targetX = alignmentPoint - nearestIndex * cardTotalWidth;
-      animate(dragX, targetX, releaseSpring);
+
+      releaseAnimRef.current = animate(dragX, targetX, releaseSpring);
       resetGesture();
       return;
     }
 
     // Inertial snap:
-    // 1) Find current "slot" index
+    // 1) Read current track position.
     const currentX = dragX.get();
-    const currentIndex = Math.round((alignmentPoint - currentX) / cardTotalWidth);
 
-    // 2) Project using velocity (different feel on desktop vs mobile)
+    // 2) Decide how many cards we're allowed to move in a single swipe.
+    const maxStep = isDesktop ? MAX_CARDS_PER_SWIPE_DESKTOP : MAX_CARDS_PER_SWIPE_MOBILE;
+    const maxDragDistance = maxStep * cardTotalWidth;
+
+    // 3) Only apply velocity projection if the user didn't already drag "near the cap".
+    //    If they already dragged a lot, adding velocity projection often feels like a fling.
+    const allowVelocityProjection = absTotalDx < maxDragDistance * 0.8;
+
     const projectionFactor = isDesktop
       ? VELOCITY_PROJECTION_DESKTOP
       : VELOCITY_PROJECTION_MOBILE;
 
-    const projectedX = currentX + g.velocityX * projectionFactor;
-    const rawIndex = Math.round((alignmentPoint - projectedX) / cardTotalWidth);
+    const projectedX = allowVelocityProjection
+      ? currentX + v * projectionFactor
+      : currentX;
 
-    // 3) Limit how many slots we can jump in a single swipe
-    const maxStep = isDesktop
-      ? MAX_CARDS_PER_SWIPE_DESKTOP
-      : MAX_CARDS_PER_SWIPE_MOBILE;
+    // 4) Work with float indices to reduce rounding weirdness,
+    //    then clamp the final step to [-maxStep, +maxStep].
+    const currentIndexF = (alignmentPoint - currentX) / cardTotalWidth;
+    const projectedIndexF = (alignmentPoint - projectedX) / cardTotalWidth;
 
-    const step = rawIndex - currentIndex;
+    const rawStep = Math.round(projectedIndexF - currentIndexF);
     const clampedStep =
-      step > maxStep ? maxStep : step < -maxStep ? -maxStep : step;
+      rawStep > maxStep ? maxStep : rawStep < -maxStep ? -maxStep : rawStep;
 
-    const targetIndex = currentIndex + clampedStep;
+    // 5) Compute final target index and animate to its X position.
+    const targetIndex = Math.round(currentIndexF + clampedStep);
     const targetX = alignmentPoint - targetIndex * cardTotalWidth;
 
-    animate(dragX, targetX, releaseSpring);
+    releaseAnimRef.current = animate(dragX, targetX, releaseSpring);
 
+    // Cleanup gesture state for the next interaction.
     resetGesture();
   };
+
+
 
   /* ---------------- Menu / updates ----------------------------------- */
   const handleDetails = (event: EventWithCreatorAndRsvps) => {

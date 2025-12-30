@@ -1,24 +1,44 @@
 import { NextResponse } from 'next/server';
-import { Resend } from 'resend';
+import { render } from '@react-email/render';
+import {
+  TransactionalEmailsApi,
+  TransactionalEmailsApiApiKeys,
+} from '@getbrevo/brevo';
 import { prisma } from '@/lib/prisma';
 import { RSVPStatus } from '@/generated/prisma';
 import Reminder48hEmail from '@/app/(dashboard)/emails/Reminder48hEmail';
 import ReminderDayOfEmail from '@/app/(dashboard)/emails/ReminderDayOfEmail';
 import { getEventTimeContext } from '@/lib/reminders';
+import type { ReactElement } from 'react';
 import type {
   CronSendRemindersResponse,
   ApiErrorResponse,
-} from '@/types/api'; // Response union types for success/error
+} from '@/types/api';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const brevoApiKey = process.env.BREVO_API_KEY;
 const emailFrom = process.env.EMAIL_FROM_ADDRESS;
 const cronSecret = process.env.CRON_SECRET;
 
+type SenderInfo = { name?: string; email: string };
+
+function parseSender(from: string): SenderInfo {
+  // Supports:
+  // - "Name <email@domain.com>"
+  // - "email@domain.com"
+  const match = from.match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+  if (match) {
+    const name = match[1]?.trim().replace(/^"(.+)"$/, '$1');
+    const email = match[2]?.trim();
+    return name ? { name, email } : { email };
+  }
+  return { email: from.trim() };
+}
+
 /**
  * Cron-only endpoint that:
- * 1) Authenticates with a shared secret (header + query param).
+ * 1) Authenticates with a shared secret (Authorization header).
  * 2) Finds confirmed RSVPs whose reminderScheduledAt is due and not yet sent.
- * 3) Sends the correct reminder email via Resend.
+ * 3) Renders the correct React Email template to HTML and sends it via Brevo.
  * 4) Marks reminders as sent to avoid re-sending.
  */
 export async function GET(request: Request) {
@@ -38,9 +58,9 @@ export async function GET(request: Request) {
   }
 
   // --- Environment sanity check (avoid running cron with missing config)
-  if (!process.env.RESEND_API_KEY || !emailFrom) {
+  if (!brevoApiKey || !emailFrom) {
     console.error(
-      'CRON CRITICAL ERROR: RESEND_API_KEY or EMAIL_FROM_ADDRESS not configured.'
+      'CRON CRITICAL ERROR: BREVO_API_KEY or EMAIL_FROM_ADDRESS not configured.'
     );
     const body: ApiErrorResponse = {
       success: false,
@@ -48,6 +68,10 @@ export async function GET(request: Request) {
     };
     return NextResponse.json(body, { status: 500 });
   }
+
+  const brevo = new TransactionalEmailsApi();
+  brevo.setApiKey(TransactionalEmailsApiApiKeys.apiKey, brevoApiKey);
+  const sender = parseSender(emailFrom);
 
   const now = new Date();
   console.log(
@@ -117,7 +141,7 @@ export async function GET(request: Request) {
       const eventDate = new Date(event.date);
 
       let emailSubject = '';
-      let emailReactElement: React.ReactElement;
+      let emailReactElement: ReactElement;
 
       // 4) Pick subject + email template depending on reminder type
       if (reminderPreferenceType === 'FORTY_EIGHT_HOURS') {
@@ -160,31 +184,38 @@ export async function GET(request: Request) {
       }
 
       try {
-        // 5) Send email through Resend
-        const { data, error } = await resend.emails.send({
-          from: emailFrom,
-          to: user.email,
+        // 5) Render React Email -> HTML, then send through Brevo
+        const htmlContent = await render(emailReactElement);
+
+        const result = await brevo.sendTransacEmail({
+          sender: sender.name
+            ? { name: sender.name, email: sender.email }
+            : { email: sender.email },
+          to: [
+            {
+              email: rsvp.user.email,
+              name: user.firstName || user.username || undefined,
+            },
+          ],
           subject: emailSubject,
-          react: emailReactElement,
+          htmlContent,
         });
 
-        if (error) {
-          console.error(
-            `CRON ERROR Resend: Failed to send to ${user.email} (RSVP ID: ${rsvp.id}). Error: ${error.message}`
-          );
-        } else {
-          console.log(
-            `CRON SUCCESS: Email sent to ${user.email} (RSVP ID: ${rsvp.id}). Resend ID: ${data?.id}`
-          );
+        // Brevo SDK typically returns { body: { messageId: ... } }
+        // Keep logs short but useful.
+        const messageId = result?.body?.messageId;
+        console.log(
+          `CRON SUCCESS: Email sent to ${rsvp.user.email} (RSVP ID: ${rsvp.id}).` +
+            (messageId ? ` MessageId: ${messageId}` : '')
+        );
 
-          // 6) Mark as sent so it won't be re-processed next run
-          await prisma.rSVP.update({
-            where: { id: rsvp.id },
-            data: { reminderSentAt: new Date() },
-          });
+        // 6) Mark as sent so it won't be re-processed next run
+        await prisma.rSVP.update({
+          where: { id: rsvp.id },
+          data: { reminderSentAt: new Date() },
+        });
 
-          emailsSentCount++;
-        }
+        emailsSentCount++;
       } catch (e) {
         console.error(
           `CRON CRITICAL: Exception while sending email or updating DB for RSVP ID ${rsvp.id}.`,

@@ -9,6 +9,15 @@ declare global {
       onboarding?: boolean;
     }
   }
+  // Minimal NetworkInformation typing (enough for saveData + effectiveType)
+  interface NetworkInformation {
+    saveData?: boolean;
+    effectiveType?: 'slow-2g' | '2g' | '3g' | '4g' | (string & {});
+  }
+
+  interface Navigator {
+    connection?: NetworkInformation;
+  }
 }
 
 /**

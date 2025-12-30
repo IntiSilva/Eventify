@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useState, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import { swrKeys } from '@/lib/swrKeys';
+import { useEventsByIds, useList, useStoreWriters } from '@/contexts/EventsContext';
 import { useSearchContext } from '@/contexts/SearchContext';
 import { buildEventsQS } from '@/lib/utils';
 import { useMediaQuery } from '@/lib/hooks';
@@ -15,6 +16,8 @@ import { BlobButton } from '../CommonButtons/BlobButton';
 import { AuroraButton } from '../CommonButtons/AuroraButton';
 import { ParticlesButton } from '../CommonButtons/ParticlesButton';
 import AnimatedText from '../AnimatedText/AnimatedText';
+import AnimatedIcon from '../LordIcons/AnimatedIcon';
+import { LoadingDotsAnimatedIcon } from '@/lib/icons';
 import SearchResultsTitle from '../AnimatedText/SearchResultsTitle';
 import { FeaturedThresholdTooltip } from '../InfoTooltip';
 
@@ -136,15 +139,160 @@ export default function HomePageClientWrapper({
   const { setOnSearchSubmit } = useSearchContext();
   const isDesktop = useMediaQuery('(min-width: 768px)');
 
-  /**
-   * Public search handler for the Home page.
-   * Builds URLSearchParams from the Searchbar filters and navigates to "/".
-   * Memoized for clean effect deps.
-   */
-  const handlePublicSearch = useCallback((filters: SearchbarFilters) => {
+  // -----------------------------------------------------------------------------
+  // OPTIMISTIC "MODE" + CAROUSEL FALLBACK FROM CONTEXT
+  // - Avoid waiting for SSR prop `isSearchMode` to flip back when clearing search.
+  // - Use EventsContext as the persistent cache for carousels.
+  // -----------------------------------------------------------------------------
+
+  const [optimisticIsSearchMode, setOptimisticIsSearchMode] = useState(isSearchMode);
+  const [optimisticFilters, setOptimisticFilters] = useState<SearchbarFilters>({});
+
+
+  // Keep in sync when the server payload arrives
+  useEffect(() => {
+    setOptimisticIsSearchMode(isSearchMode);
+  }, [isSearchMode]);
+
+  const effectiveIsSearchMode = optimisticIsSearchMode;
+
+
+// Anchor for "go back to list mode" scroll (above carousels)
+const homeTopRef = useRef<HTMLDivElement>(null);
+// We trigger scroll manually because router.push uses { scroll: false }
+const [pendingScroll, setPendingScroll] = useState<'home' | 'search' | null>(null);
+
+
+useEffect(() => {
+  if (!pendingScroll) return;
+
+  let cancelled = false;
+  const TRIES_MAX = 12;
+
+  const tick = (tries: number) => {
+    if (cancelled) return;
+
+    const target =
+      pendingScroll === 'search'
+        ? searchResultsTopRef.current
+        : homeTopRef.current;
+
+    if (target) {
+      // Mobile search: same small delay you already use elsewhere so layout settles nicely
+      const delay = !isDesktop && pendingScroll === 'search' ? 90 : 0;
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
+            setPendingScroll(null);
+          }, delay);
+        });
+      });
+
+      return;
+    }
+
+    if (tries >= TRIES_MAX) {
+      setPendingScroll(null);
+      return;
+    }
+
+    requestAnimationFrame(() => tick(tries + 1));
+  };
+
+  tick(0);
+  return () => {
+    cancelled = true;
+  };
+}, [pendingScroll, isDesktop]);
+
+// Read cached carousel lists (persist across route transitions because provider is in layout)
+const upcomingIds = useList('upcoming');
+const featuredIds = useList('featured');
+
+const cachedUpcomingEvents = useEventsByIds(upcomingIds);
+const cachedFeaturedEvents = useEventsByIds(featuredIds);
+
+// If SSR props are empty (typical while you're still on the "search payload"),
+// fall back to the cached context data so the carousels can show instantly.
+const upcomingFallback = upcomingEvents.length ? upcomingEvents : cachedUpcomingEvents;
+const featuredFallback = featuredEvents.length ? featuredEvents : cachedFeaturedEvents;
+
+// Optional safety: seed the store from SSR when the lists are empty (first load / hard refresh)
+const { upsertEvents, setList } = useStoreWriters();
+useEffect(() => {
+  if (upcomingEvents.length && upcomingIds.length === 0) {
+    upsertEvents(upcomingEvents);
+    setList('upcoming', upcomingEvents.map(e => e.id));
+  }
+  if (featuredEvents.length && featuredIds.length === 0) {
+    upsertEvents(featuredEvents);
+    setList('featured', featuredEvents.map(e => e.id));
+  }
+}, [
+  upcomingEvents,
+  featuredEvents,
+  upcomingIds.length,
+  featuredIds.length,
+  upsertEvents,
+  setList,
+]);
+
+
+  const searchResultsTopRef = useRef<HTMLDivElement>(null);
+
+  // Measure the height of your fixed navbar/searchbar and set the exponent as a CSS variable for `scroll-mt`.
+  // This way we don't have to guess compensations when the title wraps
+  useEffect(() => {
+    const headerEl =
+      document.querySelector('header') ||
+      document.querySelector('nav');
+
+    if (!headerEl) return;
+
+    const update = () => {
+      const h = headerEl.getBoundingClientRect().height;
+      const px = Math.ceil(h + 12); // +12px de aire
+      document.documentElement.style.setProperty('--home-search-scroll-mt', `${px}px`);
+    };
+
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  // Only for the "More Events" header and SearchResultsTitle busy indicator:
+  // true only while the list still has 0 cards rendered and is actively loading.
+  const [initialHeaderLoading, setInitialHeaderLoading] = useState(false);
+  const handleInitialHeaderLoadingChange = useCallback((loading: boolean) => {
+    setInitialHeaderLoading(loading);
+  }, []);
+
+  // Handles Home search navigation with an optimistic UI mode switch.
+  // Immediately toggles search/list mode on the client (before SSR responds),
+  // then updates the URL with the selected filters.
+  const handlePublicSearch = useCallback(
+  (filters: SearchbarFilters) => {
+    const wantsSearch = Boolean(
+      filters.search?.trim() ||
+        filters.category ||
+        filters.location?.trim() ||
+        filters.creator?.trim() ||
+        filters.date
+    );
+
+    // Flip UI immediately (don’t wait for SSR prop change)
+    setOptimisticFilters(filters);
+    setOptimisticIsSearchMode(wantsSearch);
+    // Scroll up immediately on submit/close
+    setPendingScroll(wantsSearch ? 'search' : 'home')
+
     const qs = buildEventsQS(filters); // sin viewTz en la URL pública
     router.push(qs ? `/?${qs}` : '/', { scroll: false });
-  }, [router]);
+  },
+  [router]
+);
 
   /**
    * Register the public search handler into the SearchContext so the navbar search
@@ -164,22 +312,20 @@ export default function HomePageClientWrapper({
    * ----------------------------------------------------------------------------- */
   return (
     <>
-      {!isSearchMode ? (
+        {/* Stable top anchor for returning to list mode */}
+      <div
+        ref={homeTopRef}
+        aria-hidden
+        className="h-0 mb-0 scroll-mt-[var(--home-search-scroll-mt,8rem)]"
+      />
+      {!effectiveIsSearchMode ? (
         <>
           {/* UPCOMING */}
-          <HeaderFullWidth title="Upcoming Events" withActions userRole={userRole} isDesktop={isDesktop}/>
-          {/* 
-            Full-bleed section element for the carousel.
-            We keep the simple pattern `w-screen -mx-[calc(50vw-50%)]` for edge-to-edge visuals,
-            and rely on the global `html, body { overflow-x: clip; }` to prevent horizontal scroll.
-            Thanks to `scrollbar-gutter: stable` and the body-compensation neutralization,
-            opening the desktop Dialog no longer introduces a right-side gap nor triggers
-            resize cascades in the carousel/background.
-          */}
+          <HeaderFullWidth title="Upcoming Events" withActions userRole={userRole} isDesktop={isDesktop} />
           <section className="relative w-screen -mx-[calc(50vw-50%)]">
-            {upcomingEvents.length ? (
+            {upcomingFallback.length ? (
               <HomeArcCarousel
-                fallbackData={upcomingEvents}
+                fallbackData={upcomingFallback}
                 swrKey={swrKeys.events('?dateGroup=upcoming')}
                 listName="upcoming"
               />
@@ -192,21 +338,21 @@ export default function HomePageClientWrapper({
           <HeaderFullWidth
             title="Featured Events"
             inlineAddon={
-              <span className='relative -top-0.5'>
-              <FeaturedThresholdTooltip
-                className="bg-black hover:bg-black focus:bg-black"     // margen con el título
-                side="top"
-                align="start"
-                triggerMode="both"   // hover + click
-              />
+              <span className="relative -top-0.5">
+                <FeaturedThresholdTooltip
+                  className="bg-black hover:bg-black focus:bg-black"
+                  side="top"
+                  align="start"
+                  triggerMode="both"
+                />
               </span>
             }
             isDesktop={isDesktop}
           />
           <section className="relative w-screen -mx-[calc(50vw-50%)]">
-            {featuredEvents.length ? (
+            {featuredFallback.length ? (
               <HomeArcCarousel
-                fallbackData={featuredEvents}
+                fallbackData={featuredFallback}
                 swrKey={swrKeys.events('?featured=true')}
                 listName="featured"
               />
@@ -217,32 +363,68 @@ export default function HomePageClientWrapper({
         </>
       ) : (
         // SEARCH MODE: composed title that reflects current filters
-        <SearchResultsTitle
-          searchTerm={currentSearchTerm}
-          category={currentCategory}
-          location={currentLocation}
-          creator={currentCreator}
-          date={currentDate}
-          creatorLabel="Organized by"
-          as="h2"
-          className="mb-6"
-        />
+        <>
+          {/* Stable anchor for pagination in search (independent of title height) */}
+          <div
+            ref={searchResultsTopRef}
+            aria-hidden
+            className="h-0 mb-0 scroll-mt-[var(--home-search-scroll-mt,8rem)]"
+          />
+
+          <SearchResultsTitle
+            searchTerm={(optimisticFilters.search ?? currentSearchTerm) || null}
+            category={(optimisticFilters.category ?? currentCategory) || null}
+            location={(optimisticFilters.location ?? currentLocation) || null}
+            creator={(optimisticFilters.creator ?? currentCreator) || null}
+            date={(optimisticFilters.date ?? currentDate) || null}
+            creatorLabel="Organized by"
+            as="h2"
+            className="mb-6"
+            isBusy={initialHeaderLoading}
+            busyIconSize={isDesktop ? 24 : 20}
+          />
+        </>
       )}
 
       {/* MAIN LIST */}
       <section>
-        {!isSearchMode && (
+        {!effectiveIsSearchMode  && (
           <AnimatedText
             as="h2"
             title="More Events"
             containerClassName="text-center"
-            headingClassName="text-3xl lg:text-4xl lg:tracking-wider font-bold font-display text-white mb-6 lg:mb-8 opacity-0"
+            // Make the heading an inline-block anchor so absolute loader doesn't affect centering.
+            headingClassName="relative inline-block text-3xl lg:text-4xl lg:tracking-wider font-bold font-display text-white opacity-0"
             splitMode={isDesktop ? 'char' : 'word'}
+            //Loader dots
+            inlineAddon={
+              <span
+                className="
+                  pointer-events-none
+                  absolute left-full ml-2.5
+                  bottom-[0.12em]
+                  inline-flex items-end justify-center
+                "
+                aria-hidden={!initialHeaderLoading}
+              >
+                {initialHeaderLoading ? (
+                    <AnimatedIcon
+                      icon={LoadingDotsAnimatedIcon}
+                      state="loop"
+                      disableInternalHover
+                      size={isDesktop ? 22 : 18}
+                      className="opacity-90"
+                    />
+                ) : null}
+              </span>
+            }
           />
         )}
 
         <HomeMainEventList
           initialEventsPayload={initialMainListPayload}
+          onInitialLoadingChange={handleInitialHeaderLoadingChange}
+          scrollTopAnchorRef={effectiveIsSearchMode ? searchResultsTopRef : undefined}
         />
       </section>
     </>

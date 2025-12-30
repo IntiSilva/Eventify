@@ -155,7 +155,7 @@ interface ThreadsProps {
   forceStaticImage?: boolean;
 }
 
-/* -------------------------- Component (Refactor) ------------------------- */
+/* -------------------------- Component ------------------------- */
 const ThreadsBackground: React.FC<ThreadsProps> = ({
   color = [0.1, 0.8, 0.5],
   amplitude = 1,
@@ -415,7 +415,7 @@ const ThreadsBackground: React.FC<ThreadsProps> = ({
         ref={containerRef}
         className="absolute inset-0 w-full h-full bg-black pointer-events-none"
       >
-        {useStaticImage && (
+        {isReady && useStaticImage && (
           <Image
             src={staticImageSrc}
             alt=""

@@ -4,18 +4,34 @@ import {
   Text,
   Heading,
   Hr as EmailHr,
+  Section,
+  Row,
+  Column,
 } from "@react-email/components";
 import { colors, fonts, radii } from "./theme";
 
-// TEMPORARY: inline Base64 until you move to a public URL.
-// Gmail usually blocks data URIs, but you told me “let's keep it like this for now”.
-const LOGO_BASE64 =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHEAAAB4CAMAAADyr+0qAAACE1BMVEUAAAAAAAAAgID///8AVVUAgEAAgFUAbUkAgGAAdF3///////////////////////////////////////////////8DeVgDeFb///8DeFcDd1f///8DeVgFeFYFd1cFd1j///////////////////////////////////8Ed1cEeFcEeFf///8EeFcDeVcDeFcFeFcFeFf////////////////5/Pv6/Pz9/v7///////////////8EeFcFeFcFeFgFeVgGeVgGeVkHeVkHelkHeloIeloJeloJe1sKe1sLe1sLfFwMfFwMfV0NfV0OfV0Ofl4Pfl4Pf18Qfl8Qf18Rf18SgGATgGEUgWEVgWIWgWMXgmMYgmQZg2Qag2UahGYbhGcchWcdhWgehmgfhmkgh2khh2oiiGsjiGwlim0mim4ni24oi28qjHArjHEsjXItjXMvj3Mwj3QxkHUykHY0knc1kng4k3k5k3o7lXw8lX0/l35Al39CmYBDmYBGm4NHm4NJnYVKnYVMn4hNn4hRoYtSoYtVo41Wo41appBbppBeqJNfqJNiq5Zjq5ZnrZlorZlrsJxssJxwsqBxsqB2taR3taR9uah+uaiDvKuJv6+PwrOVxreXx7mcybyfy76jzcGq0car0sex1cq32c+42dC+3NTG4NnN5N7N5d7V6ePd7ejk8e3s9fLz+ff+/v7///+/UuqLAAAAPXRSTlMAAQICAwQGBwgLDg8QERwoKjU5QkRKTlNUVVhbXWJna5SWpKu1vL6/yM3Q1dba3N3h4unt7vj6+vr6+/z+xfS+2gAAAAFiS0dEsENkrsQAAAHwSURBVGje7ds7TsNAEAbgsbFEwUNCqei5AZyEDqFUNJQUvIqU0CTcggtwEBpKaIAqGGftvAgi2DMUSZV4ERGZ35K9biJtkU87+2d2ZTveLs1fHuldXe9ufrB5rige+YS9zgxaNBTkjEpdDZRhrkgDzVnmid6eWk2f80VqKIGtmIigyWn3wGLL2NZRK6v8YRNLk9X+k1VUyurx5AOXnEaEFpPMvo46WR39khzdrKJ3KyfqiYIWBS0KWhQn6ohc/jkyVgy4gKoyuqqMniNXY47o5DC6qszoDsDl7+RBBTpAwJKhOzmzE524HFG2l/Pd3c+/iryzFLDzhq6qEbBoInRyLFPUE+MI/etIGCx239EdIEnBYi9Ed7nkGywOQnQnj8dgcRiid6v4a0HR6/8PHIeL7o/+gzt1ONGJE5HQosDvkqHnKAXMMfXAc0wFXNVU0GIV7iGjQQq4GutIYJEJ3XMKeBqYoasKBslHg5V5joxOjqDXUYpIDl5ktIju5GiQfC5iHV3PUTjnUG12cENXpPX9mTHvVhE89Wn1YA1Y0xvjrxxuIlexnQT1rfnhKzVQDAW1nOF71eTkDaplNRtZ3tFVy+rJC3h/vIa/Tx71beuolFWObckpT1YHVlEpqxeP6LOcQZ8eLzvTCsL+/fQ6fQT6A8ieaw73RV12AAAAAElFTkSuQmCC";
+
+function getSiteUrl() {
+  const raw = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
+  return raw.replace(/\/$/, '');
+}
+
+const LOGO_URL = `${getSiteUrl()}/logo-eventify-png-2x.png`;
+
 
 export const Logo = ({ width = 120 }: { width?: number }) => (
-  <div style={{ textAlign: "center", marginBottom: 24 }}>
-    <Img src={LOGO_BASE64} alt="Eventify" width={width} />
-  </div>
+  <Section style={{ marginBottom: 24 }}>
+    <Row>
+      <Column align="center">
+        <Img
+          src={LOGO_URL}
+          alt="Eventify"
+          width={width}
+          style={{ display: "block", margin: "0 auto" }}
+        />
+      </Column>
+    </Row>
+  </Section>
 );
 
 export const Title = ({ children }: { children: React.ReactNode }) => (

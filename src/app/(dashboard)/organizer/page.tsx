@@ -15,6 +15,9 @@ interface OrganizerPageProps {
   searchParams?: SearchParamsPromise;
 }
 
+type PopularEvents = Awaited<ReturnType<typeof getPopularEventsByOrganizer>>;
+type MonthlyEvents = Awaited<ReturnType<typeof getMonthlyEventsByOrganizer>>;
+
 export default async function OrganizerPage({ searchParams }: OrganizerPageProps) {
   const user = await getCurrentUserFromDb();
   if (!user) {
@@ -33,13 +36,23 @@ export default async function OrganizerPage({ searchParams }: OrganizerPageProps
     resolvedSearchParams.date
   );
 
-  const [popularEvents, monthlyEvents, organizerDataPayload] = await Promise.all([
-    getPopularEventsByOrganizer(user.clerkId, 24),
-    getMonthlyEventsByOrganizer(user.clerkId),
-    getEventsByOrganizer(user.clerkId, resolvedSearchParams),
-  ]);
+  const emptyPopular: PopularEvents = [];
+  const emptyMonthly: MonthlyEvents = [];
 
-  const upcomingRsvpCount = await getUserUpcomingRsvpCount(user.clerkId);
+  const popularPromise = isSearchMode
+    ? Promise.resolve(emptyPopular)
+    : getPopularEventsByOrganizer(user.clerkId, 24);
+
+  const monthlyPromise = isSearchMode
+    ? Promise.resolve(emptyMonthly)
+    : getMonthlyEventsByOrganizer(user.clerkId);
+
+  const [organizerDataPayload, upcomingRsvpCount, popularEvents, monthlyEvents] = await Promise.all([
+    getEventsByOrganizer(user.clerkId, resolvedSearchParams),
+    getUserUpcomingRsvpCount(user.clerkId),
+    popularPromise,
+    monthlyPromise,
+  ]);
   const showMyAgendaBtn = upcomingRsvpCount > 0;
   const showCreateBtn   = organizerDataPayload.metadata.totalEvents! > 0;
 

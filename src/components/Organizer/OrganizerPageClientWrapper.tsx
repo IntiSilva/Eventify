@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useCallback, useEffect, useMemo } from 'react';
+import { useRef, useCallback, useLayoutEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 
@@ -75,15 +75,30 @@ export default function OrganizerPageClientWrapper({
 
   // Seed SSR data into the store as-is (eventsPerPage may be 8)
   const { upsertEditableEvents, setSearchPage } = useStoreWriters();
-  useEffect(() => {
+  const seededRef = useRef<string | null>(null);
+  
+  useLayoutEffect(() => {
     if (!initialPayload?.data?.length) return;
-    const ids = initialPayload.data.map(e => e.id);
+
+    const seedKey = `${searchKey}:${pageSize}:${initialPayload.metadata.currentPage}`;
+    if (seededRef.current === seedKey) return; // evita double-seed en dev
+    seededRef.current = seedKey;
+
+    // 1) Upsert todas las entidades (ok)
     upsertEditableEvents(initialPayload.data);
+
+    // 2) Importante: page ids acorde al pageSize REAL del cliente
+    const ids = initialPayload.data.slice(0, pageSize).map(e => e.id);
+
+    const totalEvents = initialPayload.metadata.totalEvents ?? ids.length;
+
     setSearchPage(searchKey, initialPayload.metadata.currentPage, ids, {
       ...initialPayload.metadata,
       currentPage: initialPayload.metadata.currentPage,
+      eventsPerPage: pageSize,
+      totalPages: Math.max(1, Math.ceil(totalEvents / pageSize)),
     });
-  }, [initialPayload, searchKey, upsertEditableEvents, setSearchPage]);
+  }, [initialPayload, searchKey, pageSize, upsertEditableEvents, setSearchPage]);
 
   // Smooth scroll to the title (fixed offset + rAF)
   const NAVBAR_COLLAPSED_HEIGHT = 52;
@@ -234,6 +249,7 @@ if (completelyEmpty) {
         pageSize={pageSize}
         filters={filters}
         onPageNav={scrollToTitle}
+        hasSsrSeed={initialPayload.data.length > 0}
       />
     </div>
   );

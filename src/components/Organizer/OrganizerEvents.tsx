@@ -62,6 +62,7 @@ type OrganizerEventsProps = {
   filters: SearchbarFilters;
   /** Used ONLY by pagination buttons to report navigation. */
   onPageNav?: (e: PageNavEvent) => void;
+  hasSsrSeed?: boolean;
 };
 
 // Defensive fetch if warm-up hasn't populated the FULL entity yet
@@ -85,11 +86,13 @@ export default function OrganizerEvents({
   pageSize,
   filters,
   onPageNav,
+  hasSsrSeed,
 }: OrganizerEventsProps) {
   const isDesktop = useMediaQuery('(min-width: 768px)');
 
   // State machine
   const [currentPage, setCurrentPage] = useState(1); // requested page
+  const [hydrated, setHydrated] = useState(false);
   const [readyPage, setReadyPage] = useState(1); // visible page
   const [pendingPage, setPendingPage] = useState<number | null>(null);
   const [isExiting, setIsExiting] = useState(false);
@@ -97,6 +100,10 @@ export default function OrganizerEvents({
   const [isPending, startTransition] = useTransition();
   const didMountRef = useRef(false);
   const lastNavEventRef = useRef<PageNavEvent | null>(null);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   // When filters or pageSize change, restart to page 1 with an exit transition
   useEffect(() => {
@@ -127,64 +134,85 @@ export default function OrganizerEvents({
   const { removeEvents } = useInvalidationWriters();
   const { open: openMenu } = useMenu();
 
-  // Staleness: if requested page exists but with a different eventsPerPage, refetch it
+  // Staleness: avoid "pageSize mismatch" refetch on first tick (hydration race).
   const reqIsStale =
-    req.hasPage && (req.meta?.eventsPerPage ?? pageSize) !== pageSize;
+    hydrated &&
+    req.hasPage &&
+    (req.meta?.eventsPerPage ?? pageSize) !== pageSize;
+
 
   // Fetch when the requested page is missing or stale
   useEffect(() => {
-    if (req.hasPage && !reqIsStale) return;
+  const reason =
+    (!hydrated && hasSsrSeed && currentPage === 1 && !req.hasPage)
+      ? 'blocked:waiting-ssr-seed'
+      : (req.hasPage && !reqIsStale)
+        ? 'skip:have-page-not-stale'
+        : (!req.hasPage)
+          ? 'fetch:missing-page'
+          : 'fetch:stale-page';
 
-    const url =
-      `${swrKeys.organizer.list()}?` +
-      buildOrganizerQS({
-        page: currentPage,
-        limit: pageSize, // real limit
-        filters: {
-          search: filters.search || '',
-          location: filters.location || '',
-          category: filters.category || '',
-          date: filters.date || '',
-        },
+  console.log('[org fetch decide]', {
+    reason,
+    hydrated,
+    hasSsrSeed,
+    currentPage,
+    hasPage: req.hasPage,
+    metaEPP: req.meta?.eventsPerPage,
+    pageSize,
+    reqIsStale,
+  });
+
+  // If wrapper has SSR for page 1, give it one tick to seed the store before fetching.
+  if (!hydrated && hasSsrSeed && currentPage === 1 && !req.hasPage) return;
+
+  if (req.hasPage && !reqIsStale) return;
+
+  const url =
+    `${swrKeys.organizer.list()}?` +
+    buildOrganizerQS({
+      page: currentPage,
+      limit: pageSize,
+      filters: {
+        search: filters.search || '',
+        location: filters.location || '',
+        category: filters.category || '',
+        date: filters.date || '',
+      },
+    });
+
+  let cancelled = false;
+  (async () => {
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      const json = (await res.json().catch(() => null)) as OrganizerEventsResponse | null;
+      if (cancelled) return;
+
+      if (!res.ok || !json) throw new Error(`HTTP ${res.status}`);
+      if (isApiErrorResponse(json)) throw new Error(json.error);
+
+      upsertEditableEvents(json.data);
+      const ids = json.data.map((e) => e.id);
+      const requestedPage = currentPage;
+
+      setSearchPage(searchKey, requestedPage, ids, {
+        ...json.metadata,
+        currentPage: requestedPage,
+        eventsPerPage: pageSize,
       });
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(url, { cache: 'no-store' });
-
-        const json = (await res.json().catch(() => null)) as
-          | OrganizerEventsResponse
-          | null;
-        if (cancelled) return;
-
-        // 1) HTTP / no-json
-        if (!res.ok || !json) throw new Error(`HTTP ${res.status}`);
-
-        // 2) API logical error
-        if (isApiErrorResponse(json)) throw new Error(json.error);
-
-        // 3) success
-        upsertEditableEvents(json.data);
-
-        const ids = json.data.map((e) => e.id);
-        const requestedPage = currentPage;
-
-        setSearchPage(searchKey, requestedPage, ids, {
-          ...json.metadata,
-          currentPage: requestedPage,
-          eventsPerPage: pageSize, // staleness key
-        });
-      } catch (err) {
-        if (cancelled) return;
-        console.error(err);
-      }
-    })();
+    } catch (err) {
+      if (cancelled) return;
+      console.error(err);
+    }
+  })();
 
     return () => {
       cancelled = true;
     };
   }, [
+    req.meta?.eventsPerPage,
+    hydrated,
+    hasSsrSeed,
     req.hasPage,
     reqIsStale,
     searchKey,
@@ -349,7 +377,7 @@ export default function OrganizerEvents({
 
       {!loading && eventsFromStore.length > 0 && (
         <motion.div
-          key={`${searchKey}:${readyPage}:${pageSize}`} // remount if only the limit changes
+          key={`${searchKey}:${readyPage}`}
           className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4"
           variants={gridStaggerVariants}
           initial="initial"
