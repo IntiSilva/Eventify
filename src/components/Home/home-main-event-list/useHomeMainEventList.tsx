@@ -23,16 +23,13 @@ import { PAGE_SIZE_MAIN } from '@/lib/constants';
 import type { EventWithCreatorAndRsvps } from '@/types/event';
 import type { SearchbarFilters } from '@/components/Searchbar/Searchbar';
 import type { HomePageData } from '@/lib/data';
-import type {
-  PaginatedApiResponse,
-  PaginatedSuccess,
-} from "@/types/api";
+import type { PaginatedApiResponse, PaginatedSuccess } from '@/types/api';
 
 /* ---------------------------------------------------------------------- */
 /*  Types                                                                 */
 /* ---------------------------------------------------------------------- */
 type ApiEventResponse = PaginatedApiResponse<EventWithCreatorAndRsvps>;
-type ApiEventSuccess  = PaginatedSuccess<EventWithCreatorAndRsvps>;
+type ApiEventSuccess = PaginatedSuccess<EventWithCreatorAndRsvps>;
 
 export type HomeMainInitialPayload = HomePageData['initialMainListPayload'];
 
@@ -88,14 +85,12 @@ async function fetcher(key: string): Promise<ApiEventSuccess> {
   }
 
   if (!res.ok || !json || !json.success) {
-    const message =
-      json && !json.success ? json.error : `HTTP ${res.status}`;
+    const message = json && !json.success ? json.error : `HTTP ${res.status}`;
     throw new Error(message);
   }
 
   return json; // success:true, data, metadata
 }
-
 
 const extractPageFromKey = (key: unknown): number | null => {
   if (typeof key !== 'string') return null;
@@ -109,10 +104,19 @@ const extractPageFromKey = (key: unknown): number | null => {
 const scheduleIdle = (cb: () => void) => {
   if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
     const idleCb: IdleRequestCallback = () => cb();
-    window.requestIdleCallback(idleCb, { timeout: 1500 });
+    window.requestIdleCallback(idleCb, { timeout: 1200 });
   } else {
     setTimeout(cb, 0);
   }
+};
+
+const schedulePrefetch = (urgent: boolean, cb: () => void) => {
+  if (urgent) {
+    // If the user is paging fast, don't wait for idle time
+    setTimeout(cb, 0);
+    return;
+  }
+  scheduleIdle(cb);
 };
 
 /* ---------------------------------------------------------------------- */
@@ -154,11 +158,22 @@ export function useHomeMainEventList(
   const listTopRef = useRef<HTMLDivElement>(null);
   const userPagingRef = useRef(false);
   const prefetchSigRef = useRef<string | null>(null);
-  // const scrollCancelRef = useRef<(() => void) | null>(null);
 
   // Progressive prefetch window tracking
   const prefetchedMaxRef = useRef<number>(1); // highest page currently prefetched for the “HOME” window
-  const progressiveSigRef = useRef<string | null>(null);
+
+  // Progressive prefetch control (prevents cancellation on rapid paging)
+  const progressiveRef = useRef<{
+    sig: string | null;
+    epoch: number; // increments when signature changes
+    running: boolean; // only one progressive job at a time
+    plannedMax: number; // “reserved” window end (prevents re-trigger spam)
+  }>({
+    sig: null,
+    epoch: 0,
+    running: false,
+    plannedMax: 1,
+  });
 
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const { open: openMenu } = useMenu();
@@ -191,50 +206,64 @@ export function useHomeMainEventList(
   );
 
   const metaTotalPagesSeed = initialEventsPayload?.metadata?.totalPages;
-  const seedTotalPages = useMemo(
-    () => Math.max(1, metaTotalPagesSeed ?? 1),
-    [metaTotalPagesSeed]
-  );
+  const seedTotalPages = useMemo(() => Math.max(1, metaTotalPagesSeed ?? 1), [metaTotalPagesSeed]);
 
   /* ---------------------------- Store writers ------------------------- */
-  const { upsertEvents, setSearchPage } = useStoreWriters();
+  const { upsertEvents, setSearchPage, touchSearchPage } = useStoreWriters();
   const { registerMainListKey, unregisterMainListKey } = useMainListSWRKeys();
 
   /* ------------------------------ URL filters ------------------------- */
   const params = useSearchParams();
-  const urlSearch   = params.get('search')   || '';
+  const urlSearch = params.get('search') || '';
   const urlCategory = params.get('category') || '';
   const urlLocation = params.get('location') || '';
-  const urlCreator  = params.get('creator')  || '';
-  const urlDate     = params.get('date')     || '';
+  const urlCreator = params.get('creator') || '';
+  const urlDate = params.get('date') || '';
 
   const filters: SearchbarFilters = useMemo(
-    () => ({ search: urlSearch, category: urlCategory, location: urlLocation, creator: urlCreator, date: urlDate }),
+    () => ({
+      search: urlSearch,
+      category: urlCategory,
+      location: urlLocation,
+      creator: urlCreator,
+      date: urlDate,
+    }),
     [urlSearch, urlCategory, urlLocation, urlCreator, urlDate]
   );
 
   const searchKey = useMemo(() => buildSearchKey(filters, viewerTz), [filters, viewerTz]);
 
   // Reset page when filters change
-   useEffect(() => {
+  useEffect(() => {
     const id = requestAnimationFrame(() => {
       setCurrentPage(1);
       setVisiblePage(1);
     });
     return () => cancelAnimationFrame(id);
-  }, [urlSearch, urlCategory, urlLocation, urlCreator, urlDate]);
+  }, [searchKey]);
 
-  
   /* -------------------------- Exclusions (Upcoming) ------------------- */
   const isAnyFilterActive = !!(urlSearch || urlCategory || urlLocation || urlCreator || urlDate);
 
-  const { ids: visibleIds,   meta: visibleMeta,   hasPage: hasVisible   } = useSearchPage(searchKey, visiblePage);
+  const { ids: visibleIds, meta: visibleMeta, hasPage: hasVisible } = useSearchPage(
+    searchKey,
+    visiblePage
+  );
   const { meta: requestedMeta, hasPage: hasRequested } = useSearchPage(searchKey, currentPage);
 
+  useEffect(() => {
+    // Only when we truly have that visible page in the store
+    if (!hasVisible) return;
+
+    // Key rule: don’t touch/trim while we’re in transition,
+    // because visiblePage is still the “old” page and could prune what we’re fetching.
+    if (currentPage !== visiblePage) return;
+
+    touchSearchPage(searchKey, visiblePage);
+  }, [hasVisible, currentPage, searchKey, visiblePage, touchSearchPage]);
+
   const useFallback =
-    currentPage === 1 &&
-    !isAnyFilterActive &&
-    Boolean(initialEventsPayload?.data?.length);
+    currentPage === 1 && !isAnyFilterActive && Boolean(initialEventsPayload?.data?.length);
 
   const swrFallback = useMemo<ApiEventSuccess | undefined>(() => {
     if (!useFallback) return undefined;
@@ -244,11 +273,7 @@ export function useHomeMainEventList(
       data: initialEventsPayload.data,
       metadata: initialEventsPayload.metadata,
     };
-  }, [
-    useFallback,
-    initialEventsPayload.data,
-    initialEventsPayload.metadata,
-  ]);
+  }, [useFallback, initialEventsPayload.data, initialEventsPayload.metadata]);
 
   const includeSSRExclusions = useFallback && !hasVisible && currentPage === 1;
 
@@ -297,39 +322,79 @@ export function useHomeMainEventList(
   // This prevents an extra CSR fetch on initial load when SSR payload is already present.
   const hasSsrSeedForPage1 = useFallback && Boolean(swrFallback);
 
-  const shouldSkipRevalidateOnMount =
-    (!isAnyFilterActive && currentPage === 1 && hasRequested) || hasSsrSeedForPage1;
+  const shouldSkipRevalidateOnMount = hasSsrSeedForPage1 || hasRequested;
 
-  const { error, isLoading, isValidating } = useSWR<ApiEventSuccess>(apiUrl, fetcher, {
+  const { data: swrData, error, isLoading, isValidating } = useSWR<ApiEventSuccess>(apiUrl, fetcher, {
     fallbackData: swrFallback,
     keepPreviousData: false,
     revalidateOnMount: !shouldSkipRevalidateOnMount,
     revalidateOnFocus: false,
     dedupingInterval: 60_000,
     onSuccess: (res, key) => {
-      // res es success-only
+      // res is success-only
       const arr = res.data ?? [];
       if (arr.length) upsertEvents(arr);
 
-      const ids = arr.map(e => e.id);
+      const ids = arr.map((e) => e.id);
       const requestedPage = extractPageFromKey(key) ?? currentPage;
 
       const safeEP = res.metadata.eventsPerPage ?? PAGE_SIZE_MAIN;
       const safeTE = res.metadata.totalEvents ?? ids.length;
       const safeTP = Math.max(1, Math.ceil(safeTE / safeEP));
 
-      setSearchPage(searchKey, requestedPage, ids, {
-        totalEvents:  safeTE,
-        totalPages:   safeTP,
-        currentPage:  requestedPage,
-        eventsPerPage:safeEP,
-      });
+      setSearchPage(
+        searchKey,
+        requestedPage,
+        ids,
+        {
+          totalEvents: safeTE,
+          totalPages: safeTP,
+          currentPage: requestedPage,
+          eventsPerPage: safeEP,
+        },
+        { touch: 'front', anchorPage: requestedPage }
+      );
 
       if (requestedPage === currentPage) {
         requestAnimationFrame(() => setVisiblePage(currentPage));
       }
     },
   });
+
+  useEffect(() => {
+    // Page 1 SSR: you already seed it in the hydration effect below; avoid duplicating work.
+    if (currentPage === 1 && useFallback) return;
+
+    // If it's already in the store, we're done.
+    if (hasRequested) return;
+
+    // If SWR doesn't have data yet, we can't seed.
+    const arr = swrData?.data ?? [];
+    if (!arr.length) return;
+
+    // Key case:
+    // SWR gave us data (possibly a cache hit) but the Context doesn't have that page yet.
+    upsertEvents(arr);
+
+    const ids = arr.map((e) => e.id);
+
+    const safeEP = swrData!.metadata.eventsPerPage ?? PAGE_SIZE_MAIN;
+    const safeTE = swrData!.metadata.totalEvents ?? ids.length;
+    const safeTP = Math.max(1, Math.ceil(safeTE / safeEP));
+
+    setSearchPage(
+      searchKey,
+      currentPage,
+      ids,
+      {
+        totalEvents: safeTE,
+        totalPages: safeTP,
+        currentPage,
+        eventsPerPage: safeEP,
+      },
+      { touch: 'front', anchorPage: currentPage }
+    );
+  }, [currentPage, useFallback, hasRequested, swrData, searchKey, upsertEvents, setSearchPage]);
 
   // Switch visible page when the requested one is already in the store (prefetch/SSR/cache)
   useEffect(() => {
@@ -345,11 +410,13 @@ export function useHomeMainEventList(
     }
   }, [visiblePage, currentPage, hasRequested]);
 
-
   /* --------------------- SSR hydration (p1 fallback) ------------------ */
   const hydratedKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!useFallback) { hydratedKeyRef.current = null; return; }
+    if (!useFallback) {
+      hydratedKeyRef.current = null;
+      return;
+    }
     if (hydratedKeyRef.current === searchKey) return;
 
     const initial = initialEventsPayload;
@@ -359,15 +426,21 @@ export function useHomeMainEventList(
 
       const ids = arr.map((e) => e.id);
       const safeEP = initial.metadata.eventsPerPage ?? PAGE_SIZE_MAIN;
-      const safeTE = initial.metadata.totalEvents   ?? ids.length;
+      const safeTE = initial.metadata.totalEvents ?? ids.length;
       const safeTP = Math.max(1, Math.ceil(safeTE / safeEP));
 
-      setSearchPage(searchKey, 1, ids, {
-        totalEvents:  safeTE,
-        totalPages:   safeTP,
-        currentPage:  1,
-        eventsPerPage:safeEP,
-      });
+      setSearchPage(
+        searchKey,
+        1,
+        ids,
+        {
+          totalEvents: safeTE,
+          totalPages: safeTP,
+          currentPage: 1,
+          eventsPerPage: safeEP,
+        },
+        { touch: 'front', anchorPage: 1 }
+      );
 
       hydratedKeyRef.current = searchKey;
     }
@@ -382,8 +455,11 @@ export function useHomeMainEventList(
     if (!viewerTz) return;
 
     const stickyArr = Array.from(stickyUpcomingRef.current);
-    const prefetchExcludeIds =
-      (stickyArr.length ? stickyArr : initialEventsPayload.excludeFromMainListIds).slice().sort();
+    const prefetchExcludeIds = (
+      stickyArr.length ? stickyArr : initialEventsPayload.excludeFromMainListIds
+    )
+      .slice()
+      .sort();
     const prefetchExcludeKey = prefetchExcludeIds.join(',');
 
     const initialTotalPages = seedTotalPages;
@@ -422,19 +498,10 @@ export function useHomeMainEventList(
             if (arr.length) upsertEvents(arr);
 
             const ids = arr.map((e) => e.id);
-            const safeEP = res.metadata.eventsPerPage ?? PAGE_SIZE_MAIN;
-            const safeTE = res.metadata.totalEvents ?? ids.length;
-            const safeTP = Math.max(1, Math.ceil(safeTE / safeEP));
 
-            setSearchPage(searchKey, page, ids, {
-              totalEvents:   safeTE,
-              totalPages:    safeTP,
-              currentPage:   page,
-              eventsPerPage: safeEP,
-            });
+            setSearchPage(searchKey, page, ids, undefined, { touch: 'back' });
 
             await (globalMutate as GlobalMutate)(url, res, { revalidate: false });
-          
           }
         };
 
@@ -442,16 +509,22 @@ export function useHomeMainEventList(
           Array.from({ length: Math.min(CONCURRENCY, pages.length) }, () => worker())
         );
 
-        // mark initial prefetched window (up to 5 or up to totalPages)
+        // Mark initial prefetched window (up to 5 or up to totalPages)
         prefetchedMaxRef.current = maxPage;
-        progressiveSigRef.current = `${searchKey}|${prefetchExcludeKey}|${viewerTz ?? 'no-tz'}`;
+
+        // Keep progressive signature in sync with the exclusions that were prefetched.
+        progressiveRef.current.sig = `${searchKey}|${prefetchExcludeKey}|${viewerTz ?? 'no-tz'}`;
       } catch {
         /* best effort */
       }
     };
 
-    scheduleIdle(() => { void run(); });
-    return () => { cancelled = true; };
+    schedulePrefetch(false, () => {
+      void run();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [
     isAnyFilterActive,
     initialEventsPayload.excludeFromMainListIds,
@@ -466,60 +539,87 @@ export function useHomeMainEventList(
     globalMutate,
   ]);
 
-  const pagePending =
-    currentPage !== visiblePage &&
-    !hasRequested &&
-    !(currentPage === 1 && useFallback);
+  const pagePending = currentPage !== visiblePage && !hasRequested && !(currentPage === 1 && useFallback);
 
   /* ---------------- Progressive prefetch (6..10, …) ------------------- */
   useEffect(() => {
-    // Only on HOME (no filters) and having at least the seed
     if (isAnyFilterActive) return;
     if (!seedDataLength) return;
     if (!viewerTz) return;
 
-    // If filters/TZ/exclusions change, reset window signature
+    // Build signature (filters/TZ/exclusions)
     const stickyArr = Array.from(stickyUpcomingRef.current);
-    const excludeForPrefetch = (stickyArr.length ? stickyArr : initialEventsPayload.excludeFromMainListIds)
-      .slice().sort();
+    const excludeForPrefetch = (stickyArr.length
+      ? stickyArr
+      : initialEventsPayload.excludeFromMainListIds
+    )
+      .slice()
+      .sort();
+
     const exclKey = excludeForPrefetch.join(',');
     const curSig = `${searchKey}|${exclKey}|${viewerTz ?? 'no-tz'}`;
 
-    if (progressiveSigRef.current !== curSig) {
-      // signature changed: reset (but keep at least the initial if it already ran)
+    if (progressiveRef.current.sig !== curSig) {
+      progressiveRef.current.sig = curSig;
+
+      // Invalidate any in-flight job from old signature
+      progressiveRef.current.epoch += 1;
+      progressiveRef.current.running = false;
+
+      // Keep at least the initial window
       prefetchedMaxRef.current = Math.max(prefetchedMaxRef.current, 5);
-      progressiveSigRef.current = curSig;
+      progressiveRef.current.plannedMax = prefetchedMaxRef.current;
     }
 
-    // Do not prefetch if the visible page is still “settling”
-    if (pagePending) return;
-    if (!animSettledRef.current) return;
+    // Prefer totalPages from meta; fallback to SSR total
+    const totalPagesFromMeta = visibleMeta?.totalPages ?? requestedMeta?.totalPages ?? seedTotalPages;
 
-    const THRESHOLD = 2;   // “within 2 pages of the window edge”
-    const CHUNK     = 5;   // fetch 5 more pages (e.g., 6..10)
-    const currentMax = prefetchedMaxRef.current;
+    // IMPORTANT: use "effective" max so we don't re-trigger while a job is scheduled/running
+    const effectiveMax = Math.max(prefetchedMaxRef.current, progressiveRef.current.plannedMax);
 
-    // Prefer totalPages from visible/requested meta; otherwise from SSR p1
-    const totalPagesFromMeta =
-      (visibleMeta?.totalPages ?? requestedMeta?.totalPages ?? seedTotalPages);
+    // Tuning knobs:
+    const THRESHOLD = 3; // 3 => triggers at 7 when effectiveMax=10 (7..)
+    const CHUNK = 5; // fetch 5 more pages (e.g., 11..15)
 
-    // Trigger when we’re close to the current window edge
-    if (currentPage >= currentMax - THRESHOLD && currentMax < totalPagesFromMeta) {
-      let cancelled = false;
+    // "Urgent" when the user is actively paging (don't wait for animations/idle)
+    const urgent = userPagingRef.current;
 
-      const nextStart = currentMax + 1;
-      const nextEnd   = Math.min(currentMax + CHUNK, totalPagesFromMeta);
-      if (nextStart > nextEnd) return;
+    // Keep the “don’t compete with animations” policy ONLY when not urgent
+    if (!urgent) {
+      if (pagePending) return;
+      if (!animSettledRef.current) return;
+    }
 
-      const pages = Array.from({ length: nextEnd - nextStart + 1 }, (_, i) => nextStart + i);
+    if (effectiveMax >= totalPagesFromMeta) return;
 
-      const run = async () => {
+    // Trigger when we’re close to the window edge
+    if (currentPage < effectiveMax - THRESHOLD) return;
+
+    // Only one progressive job at a time
+    if (progressiveRef.current.running) return;
+
+    const nextStart = effectiveMax + 1;
+    const nextEnd = Math.min(effectiveMax + CHUNK, totalPagesFromMeta);
+    if (nextStart > nextEnd) return;
+
+    // Reserve the window immediately so rapid paging doesn't re-trigger
+    progressiveRef.current.plannedMax = nextEnd;
+    progressiveRef.current.running = true;
+
+    const epoch = progressiveRef.current.epoch;
+    const pages = Array.from({ length: nextEnd - nextStart + 1 }, (_, i) => nextStart + i);
+
+    schedulePrefetch(urgent, () => {
+      void (async () => {
         try {
           const CONCURRENCY = 2;
           let idx = 0;
 
           const worker = async () => {
-            while (!cancelled && idx < pages.length) {
+            while (idx < pages.length) {
+              // Stop if signature changed mid-flight
+              if (progressiveRef.current.epoch !== epoch) return;
+
               const page = pages[idx++];
 
               const qs = buildPaginatedEventsURL({
@@ -529,27 +629,21 @@ export function useHomeMainEventList(
                 viewTz: viewerTz,
                 excludeIds: excludeForPrefetch,
               });
+
               const url = swrKeys.events(qs);
               const res = await fetcher(url);
-              if (cancelled) return;
+
+              if (progressiveRef.current.epoch !== epoch) return;
 
               const arr = res.data ?? [];
               if (arr.length) upsertEvents(arr);
 
               const ids = arr.map((e) => e.id);
-              const safeEP = res.metadata.eventsPerPage ?? PAGE_SIZE_MAIN;
-              const safeTE = res.metadata.totalEvents ?? ids.length;
-              const safeTP = Math.max(1, Math.ceil(safeTE / safeEP));
 
-              setSearchPage(searchKey, page, ids, {
-                totalEvents:   safeTE,
-                totalPages:    safeTP,
-                currentPage:   page,
-                eventsPerPage: safeEP,
-              });
+              // IMPORTANT: keep prefetched pages from pushing out the active ones
+              setSearchPage(searchKey, page, ids, undefined, { touch: 'back' });
 
               await (globalMutate as GlobalMutate)(url, res, { revalidate: false });
-            
             }
           };
 
@@ -557,15 +651,20 @@ export function useHomeMainEventList(
             Array.from({ length: Math.min(CONCURRENCY, pages.length) }, () => worker())
           );
 
-          prefetchedMaxRef.current = nextEnd; // advance the window
+          if (progressiveRef.current.epoch !== epoch) return;
+
+          // Advance the window only when job completes
+          prefetchedMaxRef.current = nextEnd;
         } catch {
           /* best effort */
+        } finally {
+          // Only release if still same epoch
+          if (progressiveRef.current.epoch === epoch) {
+            progressiveRef.current.running = false;
+          }
         }
-      };
-
-      scheduleIdle(() => { void run(); });
-      return () => { cancelled = true; };
-    }
+      })();
+    });
   }, [
     isAnyFilterActive,
     initialEventsPayload.excludeFromMainListIds,
@@ -587,23 +686,17 @@ export function useHomeMainEventList(
   const eventsFromStore = useEventsByIds(visibleIds);
   const canUseSSRSeed = useFallback && !hasVisible;
 
-  const events = hasVisible
-    ? eventsFromStore
-    : (canUseSSRSeed ? (initialEventsPayload?.data ?? []) : []);
+  const events = hasVisible ? eventsFromStore : canUseSSRSeed ? initialEventsPayload?.data ?? [] : [];
 
   // Meta for UI
-  const displayMeta =
-    visibleMeta ??
-    requestedMeta ??
-    initialEventsPayload?.metadata;
+  const displayMeta = visibleMeta ?? requestedMeta ?? initialEventsPayload?.metadata;
 
   const totalPagesFromMeta =
     displayMeta?.totalPages ??
     Math.max(
       1,
       Math.ceil(
-        (displayMeta?.totalEvents ?? events.length) /
-        (displayMeta?.eventsPerPage ?? PAGE_SIZE_MAIN)
+        (displayMeta?.totalEvents ?? events.length) / (displayMeta?.eventsPerPage ?? PAGE_SIZE_MAIN)
       )
     );
 
@@ -623,7 +716,7 @@ export function useHomeMainEventList(
   }, [totalPagesFromMeta, visiblePage, currentPage]);
 
   // Smooth scroll only if triggered by the pagination buttons.
-  // In mobile + search/filters, scroll to the stable anchor above SearchResultsTitle (passed from the wrapper).
+  // On mobile + search/filters, scroll to the stable anchor above SearchResultsTitle (passed from the wrapper).
   useEffect(() => {
     if (!userPagingRef.current) return;
     if (pagePending) return;
@@ -655,7 +748,6 @@ export function useHomeMainEventList(
       });
     });
   }, [visiblePage, pagePending, isDesktop, isAnyFilterActive, scrollTopAnchorRef]);
-
 
   // Viewport-driven "active card" for mobile: pick the item closest to screen center on scroll/resize
   useEffect(() => {
@@ -708,12 +800,11 @@ export function useHomeMainEventList(
     };
   }, [
     isDesktop,
-    uiPage,           // re-measure when visible page changes
-    events.length,    // re-measure if dataset length changes
-    setActiveIndex,   // stable setter, included to satisfy lints
-    cardRefs          // stable ref object; current is read inside rAF
+    uiPage, // re-measure when visible page changes
+    events.length, // re-measure if dataset length changes
+    setActiveIndex, // stable setter, included to satisfy lints
+    cardRefs, // stable ref object; current is read inside rAF
   ]);
-
 
   /* ------------------------------ Handlers ---------------------------- */
   const handleDetailsClick = (evt: EventWithCreatorAndRsvps) => {
@@ -728,7 +819,7 @@ export function useHomeMainEventList(
           next.delete(updated.id);
           return next;
         });
-      }
+      },
     });
   };
 

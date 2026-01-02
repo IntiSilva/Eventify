@@ -401,8 +401,8 @@ useEffect(() => {
               <span
                 className="
                   pointer-events-none
-                  absolute left-full ml-2.5
-                  bottom-[0.12em]
+                  absolute left-full ml-1
+                  -bottom-0.5 md:-bottom-1
                   inline-flex items-end justify-center
                 "
                 aria-hidden={!initialHeaderLoading}

@@ -85,16 +85,20 @@ const initialState: EventsState = {
 /* ---------------------------------------------------------------------- */
 /*  Actions                                                               */
 /* ---------------------------------------------------------------------- */
+
+type TouchMode =  'front' | 'back';
+
 type Action =
   | { type: 'UPSERT_EVENTS'; events: EventWithCreatorAndRsvps[] }
   | { type: 'PATCH_EVENTS_PARTIAL'; patches: EventPartial[] }
   | { type: 'SET_LIST'; name: 'featured' | 'upcoming'; ids: string[] }
   | { type: 'ADD_TO_LIST'; name: 'featured' | 'upcoming'; id: string }
   | { type: 'REMOVE_FROM_LIST'; name: 'featured' | 'upcoming'; id: string }
-  | { type: 'SET_SEARCH_PAGE'; key: string; page: number; ids: string[]; meta: SearchBucket['meta'] }
+  | { type: 'SET_SEARCH_PAGE'; key: string; page: number; ids: string[]; meta?: SearchBucket['meta']; touch?: TouchMode; }
+  | {type: 'TOUCH_SEARCH_PAGE'; key: string; page: number; touch?: TouchMode; now: number; }
+  | { type: 'TRIM_SEARCH_PAGES_WINDOW'; key: string; anchorPage: number; maxPages: number; keepBehind: number; keepAhead: number; }
   | { type: 'TOUCH_SEARCH_KEY'; key: string; now: number }
   | { type: 'EVICT_STALE_KEYS'; now: number }
-  | { type: 'TRIM_SEARCH_PAGES'; key: string; maxPages: number }
   | { type: 'APPLY_RSVP_OPT'; eventId: string; user: RsvpUser; attending: boolean }
   | { type: 'COMMIT_NEW_RSVP'; eventId: string; rsvp: RsvpItem }
   | { type: 'COMMIT_CANCEL_RSVP'; eventId: string; userId: string }
@@ -210,8 +214,25 @@ function reducer(state: EventsState, action: Action): EventsState {
         prev ?? { pages: {}, pageOrder: [], meta: undefined, lastAccess: now };
 
       const pages = { ...bucket.pages, [action.page]: action.ids };
-      const pageOrder = [action.page, ...bucket.pageOrder.filter(p => p !== action.page)];
-      const meta = action.meta ?? bucket.meta;
+
+      const touch: TouchMode = action.touch ?? 'front';
+      //  LRU order control:
+      // - front: this page becomes most-recent (a user really "toched")
+      // - back: append as oldest (prefetch must not push LRU)
+      const base = bucket.pageOrder.filter((p) => p !== action.page);
+      const pageOrder = touch === 'front'
+        ? [action.page, ...base]
+        : [...base, action.page];
+
+      // ✅ Meta policy:
+      // - si viene meta y no hay meta previa -> guardala
+      // - if we have meta and theres no meta -> save it
+      // - if touch=front -> save it
+      // - if touch=back y and there was meta -> Do not step on it (prefetch should not change the "visible" meta tag)
+      const meta =
+        action.meta
+          ? (!bucket.meta || touch === 'front' ? action.meta : bucket.meta)
+          : bucket.meta;
 
       if (DEBUG_EVENTS) {
         console.groupCollapsed('[CTX] SET_SEARCH_PAGE');
@@ -225,10 +246,10 @@ function reducer(state: EventsState, action: Action): EventsState {
         console.groupEnd();
       }
 
-      const search = {
-        ...state.lists.search,
-        [action.key]: { pages, pageOrder, meta, lastAccess: now },
-      };
+       const search = {
+          ...state.lists.search,
+          [action.key]: { pages, pageOrder, meta, lastAccess: now },
+        };
 
       // Update LRU of search keys
       let keyOrder = [action.key, ...state.lists.searchKeyOrder.filter(k => k !== action.key)];
@@ -242,6 +263,33 @@ function reducer(state: EventsState, action: Action): EventsState {
 
       return { ...state, lists: { ...state.lists, search, searchKeyOrder: keyOrder } };
     }
+
+    case 'TOUCH_SEARCH_PAGE': {
+      const bucket = state.lists.search[action.key];
+      if (!bucket) return state;
+
+      // If the page isn't present, there's nothing to touch.
+      if (!bucket.pages[action.page]) return state;
+
+      const touch: TouchMode = action.touch ?? 'front';
+      const base = bucket.pageOrder.filter((p) => p !== action.page);
+
+      const pageOrder =
+        touch === 'front'
+          ? [action.page, ...base]
+          : [...base, action.page];
+
+      const search = {
+        ...state.lists.search,
+        [action.key]: { ...bucket, pageOrder, lastAccess: action.now },
+      };
+
+      // Keep key LRU consistent with "touching" this key
+      const keyOrder = [action.key, ...state.lists.searchKeyOrder.filter(k => k !== action.key)];
+
+      return { ...state, lists: { ...state.lists, search, searchKeyOrder: keyOrder } };
+    }
+
 
     case 'TOUCH_SEARCH_KEY': {
       const bucket = state.lists.search[action.key];
@@ -279,32 +327,57 @@ function reducer(state: EventsState, action: Action): EventsState {
       return { ...state, lists: { ...state.lists, search, searchKeyOrder: keyOrder } };
     }
 
-    case 'TRIM_SEARCH_PAGES': {
+
+    case 'TRIM_SEARCH_PAGES_WINDOW': {
       const bucket = state.lists.search[action.key];
       if (!bucket) return state;
-      if (bucket.pageOrder.length <= action.maxPages) return state;
 
-     const max = Math.max(1, action.maxPages);
-      const src = bucket.pageOrder; // LRU: most recent first
+      const max = Math.max(1, action.maxPages);
+      const anchor = Math.max(1, action.anchorPage);
+      const keepBehind = Math.max(0, action.keepBehind);
+      const keepAhead = Math.max(0, action.keepAhead);
 
-      // Always keep page 1 (if present), then fill up to "max" with the remaining pages in LRU order.
-      const keepOrder: number[] = [];
-      if (src.includes(1)) keepOrder.push(1);
-      for (const p of src) {
-        if (keepOrder.length >= max) break;
-        if (p !== 1 && !keepOrder.includes(p)) keepOrder.push(p);
+      const keep = new Set<number>();
+
+      // Always keep page 1 if present
+      if (bucket.pages[1]) keep.add(1);
+
+      // Window keep
+      const start = Math.max(1, anchor - keepBehind);
+      const end = anchor + keepAhead;
+      for (let p = start; p <= end; p++) {
+        if (bucket.pages[p]) keep.add(p);
+      }
+
+      // Always keep anchor if present
+      if (bucket.pages[anchor]) keep.add(anchor);
+
+      // If still > max, drop farthest pages from anchor (but never drop 1 or anchor)
+      if (keep.size > max) {
+        const candidates = Array.from(keep).filter((p) => p !== 1 && p !== anchor);
+        candidates.sort((a, b) => Math.abs(b - anchor) - Math.abs(a - anchor)); // farthest first
+        for (const p of candidates) {
+          if (keep.size <= max) break;
+          keep.delete(p);
+        }
       }
 
       const pages = { ...bucket.pages };
-      Object.keys(pages).forEach(k => {
+      for (const k of Object.keys(pages)) {
         const pn = Number(k);
-        if (!keepOrder.includes(pn)) delete pages[pn];
-      });
+        if (!keep.has(pn)) delete pages[pn];
+      }
 
-      const nextBucket: SearchBucket = { ...bucket, pages, pageOrder: keepOrder };
+      const filtered = bucket.pageOrder.filter((p) => keep.has(p));
+      const pageOrder = keep.has(anchor)
+        ? [anchor, ...filtered.filter((p) => p !== anchor)]
+        : filtered;
+
+      const nextBucket: SearchBucket = { ...bucket, pages, pageOrder };
       const search = { ...state.lists.search, [action.key]: nextBucket };
       return { ...state, lists: { ...state.lists, search } };
     }
+
 
     case 'APPLY_RSVP_OPT': {
       const evt = state.entities[action.eventId];
@@ -596,6 +669,7 @@ export function useFeaturedSWRKeys() {
 /* ---------------------------------------------------------------------- */
 /*  Writing hooks (lists / search)                                        */
 /* ---------------------------------------------------------------------- */
+
 export function useStoreWriters() {
   const { dispatch } = useStore();
 
@@ -653,24 +727,63 @@ export function useStoreWriters() {
   }, [dispatch]);
 
   const setSearchPage = useCallback(
-    (key: string, page: number, ids: string[], meta: SearchBucket['meta']) => {
+    (
+      key: string,
+      page: number,
+      ids: string[],
+      meta?: SearchBucket['meta'],
+      opts?: { touch?: TouchMode; anchorPage?: number }
+    ) => {
       const now = Date.now();
+      const touch: TouchMode = opts?.touch ?? 'front';
+      const anchorPage = opts?.anchorPage ?? page;
 
-      if (DEBUG_EVENTS) {
-        console.groupCollapsed('[CTX] setSearchPage (writer)');
-        console.log({ key, page, ids: headTail(ids), meta });
-        console.groupEnd();
-      }
-
-      dispatch({ type: 'SET_SEARCH_PAGE', key, page, ids, meta });
+      dispatch({ type: 'SET_SEARCH_PAGE', key, page, ids, meta, touch });
       dispatch({ type: 'TOUCH_SEARCH_KEY', key, now });
       dispatch({ type: 'EVICT_STALE_KEYS', now });
-      dispatch({ type: 'TRIM_SEARCH_PAGES', key, maxPages: MAX_PAGES_PER_KEY });
+
+      // NO trim inside prefetch (touch=back)
+      if (touch === 'front') {
+        const KEEP_BEHIND = 3; // <- so that going back 2 pages always exists
+        const KEEP_AHEAD = Math.max(1, MAX_PAGES_PER_KEY - (KEEP_BEHIND + 2));
+        dispatch({
+          type: 'TRIM_SEARCH_PAGES_WINDOW',
+          key,
+          anchorPage,
+          maxPages: MAX_PAGES_PER_KEY,
+          keepBehind: KEEP_BEHIND,
+          keepAhead: KEEP_AHEAD,
+        });
+      }
     },
     [dispatch]
   );
 
-  return { upsertEvents, upsertEditableEvents, setList, addToList, removeFromList, setSearchPage };
+  const touchSearchPage = useCallback(
+    (key: string, page: number) => {
+      const now = Date.now();
+
+      dispatch({ type: 'TOUCH_SEARCH_PAGE', key, page, touch: 'front', now });
+      dispatch({ type: 'TOUCH_SEARCH_KEY', key, now });
+      dispatch({ type: 'EVICT_STALE_KEYS', now });
+
+      const KEEP_BEHIND = 3;
+      const KEEP_AHEAD = Math.max(1, MAX_PAGES_PER_KEY - (KEEP_BEHIND + 2));
+      dispatch({
+        type: 'TRIM_SEARCH_PAGES_WINDOW',
+        key,
+        anchorPage: page,
+        maxPages: MAX_PAGES_PER_KEY,
+        keepBehind: KEEP_BEHIND,
+        keepAhead: KEEP_AHEAD,
+      });
+    },
+    [dispatch]
+  );
+
+
+
+  return { upsertEvents, upsertEditableEvents, setList, addToList, removeFromList, setSearchPage, touchSearchPage };
 }
 
 /* ---------------------------------------------------------------------- */

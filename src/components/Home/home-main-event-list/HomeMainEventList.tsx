@@ -287,7 +287,6 @@ export default function HomeMainEventList({
             >
               {pagePending ? (
                 <>
-                  <span className="sr-only">Loading page…</span>
                   <AnimatedIcon
                     icon={LoadingCirclesAnimatedIcon}
                     state="loop"
