@@ -69,16 +69,39 @@ export function useMediaQuery(query: string) {
 }
 
 
-export type CarouselBreakpointKey = 'base' | 'xs3' | 'xs4' | 'md';
+// Centralized pixel breakpoints for the carousel.
+export const CAROUSEL_BREAKPOINTS_PX = {
+  'xs3': 390,
+  'xs4': 410,
+  'md': 768,
 
-export type CarouselBreakpoints = Record<Exclude<CarouselBreakpointKey, 'base'>, number>; // base carries no number
+  '2xl': 1440,
+  '3xl': 1536,
+  '4xl': 1920,
+  '2k': 2560,
+  '4k': 3840,
+} as const;
 
-export function useBreakpointCarousel(breakpoints: CarouselBreakpoints): CarouselBreakpointKey {
+export type CarouselBreakpointKey = 'base' | keyof typeof CAROUSEL_BREAKPOINTS_PX;
 
+export type CarouselBreakpoints = typeof CAROUSEL_BREAKPOINTS_PX;
+
+export function useBreakpointCarousel(
+  breakpoints: CarouselBreakpoints = CAROUSEL_BREAKPOINTS_PX
+): CarouselBreakpointKey {
   const getSnapshot = useCallback((): CarouselBreakpointKey => {
     if (typeof window === 'undefined') return 'base';
+
     const w = window.innerWidth || 0;
-    if (w >= breakpoints.md)  return 'md';
+
+    // Biggest -> smallest (min-width semantics)
+    if (w >= breakpoints['4k']) return '4k';
+    if (w >= breakpoints['2k']) return '2k';
+    if (w >= breakpoints['4xl']) return '4xl';
+    if (w >= breakpoints['3xl']) return '3xl';
+    if (w >= breakpoints['2xl']) return '2xl';
+
+    if (w >= breakpoints.md) return 'md';
     if (w >= breakpoints.xs4) return 'xs4';
     if (w >= breakpoints.xs3) return 'xs3';
     return 'base';
@@ -97,6 +120,94 @@ export function useBreakpointCarousel(breakpoints: CarouselBreakpoints): Carouse
 
   return useSyncExternalStore(subscribe, getSnapshot, () => 'base');
 }
+
+// ----------------------------------------------------------------------
+// Scroll activity store (global) - useSyncExternalStore
+// ----------------------------------------------------------------------
+
+type ScrollSnapshot = { isScrolling: boolean }
+
+const scrollSnapshot: ScrollSnapshot = { isScrolling: false }
+const scrollSubscribers = new Set<() => void>()
+
+let scrollListenerActive = false
+let scrollIdleTimeout: number | null = null
+
+const notifyScrollSubscribers = () => {
+  const run = () => scrollSubscribers.forEach((notify) => notify())
+  if (typeof queueMicrotask === 'function') queueMicrotask(run)
+  else Promise.resolve().then(run)
+}
+
+const setScrolling = (value: boolean) => {
+  if (scrollSnapshot.isScrolling === value) return
+  scrollSnapshot.isScrolling = value
+  notifyScrollSubscribers()
+}
+
+const handleScrollActivity = () => {
+  setScrolling(true)
+  if (scrollIdleTimeout) window.clearTimeout(scrollIdleTimeout)
+  scrollIdleTimeout = window.setTimeout(() => setScrolling(false), 140)
+}
+
+const handleWindowBlur = () => setScrolling(false)
+
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'hidden') setScrolling(false)
+}
+
+const ensureScrollListener = () => {
+  if (scrollListenerActive || typeof window === 'undefined') return
+  scrollListenerActive = true
+
+  window.addEventListener('scroll', handleScrollActivity, { passive: true })
+
+  // Optional (tradeoff): detects intent even if window doesn't actually scroll.
+  window.addEventListener('wheel', handleScrollActivity, { passive: true })
+  window.addEventListener('touchmove', handleScrollActivity, { passive: true })
+
+  window.addEventListener('blur', handleWindowBlur)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+}
+
+const removeScrollListener = () => {
+  if (!scrollListenerActive || typeof window === 'undefined') return
+  scrollListenerActive = false
+
+  window.removeEventListener('scroll', handleScrollActivity)
+  window.removeEventListener('wheel', handleScrollActivity)
+  window.removeEventListener('touchmove', handleScrollActivity)
+
+  window.removeEventListener('blur', handleWindowBlur)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+
+  if (scrollIdleTimeout) {
+    window.clearTimeout(scrollIdleTimeout)
+    scrollIdleTimeout = null
+  }
+
+  scrollSnapshot.isScrolling = false
+}
+
+export function useScrollActivity() {
+  const subscribe = useCallback((notify: () => void) => {
+    if (typeof window === 'undefined') return () => {}
+    ensureScrollListener()
+    scrollSubscribers.add(notify)
+
+    return () => {
+      scrollSubscribers.delete(notify)
+      if (scrollSubscribers.size === 0) removeScrollListener()
+    }
+  }, [])
+
+  const getSnapshot = useCallback(() => scrollSnapshot.isScrolling, [])
+  const getServerSnapshot = () => false
+
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+}
+
 
 
 async function fetcher(url: string): Promise<EventsConfirmedCountData> {

@@ -321,11 +321,6 @@ function MenuContentLoaded(
     }
     if (mode !== 'non-editable' || !('rsvps' in live)) return;
 
-    console.log('[Menu] toggleRSVP click', {
-      id: eventId,
-      mode,
-      hasOnRsvpCancelled: typeof onRsvpCancelled === 'function',
-    });
     const toastId = toast.loading('Updating attendance...');
 
     const prevEvent = live as EventWithCreatorAndRsvps;
@@ -333,7 +328,6 @@ function MenuContentLoaded(
 
     // Reutilizamos el memo para conocer el estado previo
     const wasAttending = isCurrentUserAttending;
-    console.log('[Menu] wasAttending?', wasAttending, 'userId?', clerkUser?.id);
 
     // Si el current user es el creator, proyectamos el creator al shape "UserProfileForAvatar"
     const creatorAsAvatar: UserProfileForAvatar | undefined =
@@ -401,14 +395,10 @@ function MenuContentLoaded(
     // Immediate UI
     onEventUpdate?.(optimisticEvent);
 
-    console.log('[Menu] sending toggleRSVP to server…', { id: eventId });
-
     // Server roundtrip + reconciliation
     startTransition(() => {
       toggleRSVP(prevEvent.id)
         .then(async (data) => {
-          console.log('[Menu] server responded', { id: eventId, data });
-
           if (!data?.success) {
             toast.error(data?.message || 'Could not update attendance.', { id: toastId });
             onEventUpdate?.(prevEvent); // rollback
@@ -459,7 +449,6 @@ function MenuContentLoaded(
             }, 1800);
 
           } else if (data.action === 'cancelled') {
-            console.log('[Menu] RSVP cancelled → notifying wrapper to remove row', eventId);
             const mergedRsvps = baseEventAfterServer.rsvps.filter(
               (x) => x.user.clerkId !== data.userId
             );

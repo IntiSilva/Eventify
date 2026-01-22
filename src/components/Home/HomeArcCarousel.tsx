@@ -9,6 +9,7 @@ import {
   cubicBezier,
   useSpring,
   useMotionValueEvent,
+  useInView,
   wrap,
   animate,
   type AnimationPlaybackControls,
@@ -27,7 +28,7 @@ import {
 } from '@/contexts/EventsContext';
 import { useViewerTz } from '@/contexts/ViewerTzContext';
 import { patchEventEverywhere, type GlobalMutate } from '@/lib/mutateHelpers';
-import { useBreakpointCarousel, type CarouselBreakpointKey } from '@/lib/hooks';
+import { useBreakpointCarousel, type CarouselBreakpointKey, useScrollActivity } from '@/lib/hooks';
 
 import type { EventWithCreatorAndRsvps } from '@/types/event';
 import type { PaginatedApiResponse, PaginatedSuccess } from '@/types/api';
@@ -82,10 +83,19 @@ const BREAKPOINTS: Record<
     popDistance: number;
   }
 > = {
-  base: { cardWidth: 145, gap: 19, activeCards: 2, curve: 20, rotationFactor: 1.3, popDistance: 30 },
-  xs3:  { cardWidth: 157, gap: 26, activeCards: 2, curve: 14, rotationFactor: 4,   popDistance: 35 },
-  xs4:  { cardWidth: 170, gap: 25, activeCards: 2, curve: 22, rotationFactor: 2,   popDistance: 38 },
-  md:   { cardWidth: 250, gap: 55, activeCards: 4, curve: 45, rotationFactor: 6,   popDistance: 40 },
+  'base': { cardWidth: 145, gap: 19, activeCards: 2, curve: 20, rotationFactor: 1.3, popDistance: 30 },
+  'xs3':  { cardWidth: 157, gap: 26, activeCards: 2, curve: 14, rotationFactor: 4,   popDistance: 35 },
+  'xs4':  { cardWidth: 170, gap: 25, activeCards: 2, curve: 22, rotationFactor: 2,   popDistance: 38 },
+  // Desktop baseline
+  'md':   { cardWidth: 250, gap: 55, activeCards: 4, curve: 45, rotationFactor: 6,   popDistance: 40 },
+
+  '2xl': { cardWidth: 250, gap: 55, activeCards: 4, curve: 45, rotationFactor: 6,   popDistance: 40 }, // 1440
+  '3xl': { cardWidth: 250, gap: 55, activeCards: 4, curve: 45, rotationFactor: 6,   popDistance: 40 }, // 1536
+
+  // Large screens
+  '4xl': { cardWidth: 320, gap: 104, activeCards: 4, curve: 45, rotationFactor: 6, popDistance: 40 }, // 1920
+  '2k':  { cardWidth: 400, gap: 112, activeCards: 4, curve: 60, rotationFactor: 6.4, popDistance: 40 }, // 2560
+  '4k':  { cardWidth: 620, gap: 132, activeCards: 4, curve: 72, rotationFactor: 7.2, popDistance: 40 }, // 3840
 };
 
 const MIN_SNAP_DISTANCE = 16;
@@ -224,6 +234,12 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
 
   const containerRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
+  const isPageScrolling = useScrollActivity();
+
+  const isCarouselInView = useInView(containerRef, { amount: 0.5 });
+
+  const effectsEnabled = isCarouselInView && !isPageScrolling && !isDragging;
+
 
   /* ---------------- Virtualization (window) ------------ */
   // Index of the first visible card in the infinite sequence (used to rebuild the window)
@@ -327,8 +343,7 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
   }, [eventsFromStore]);
 
   /* ---------------- Breakpoints & layout -------------- */
-  const breakpointMap = useMemo(() => ({ xs3: 390, xs4: 410, md: 768 }), []);
-  const currentBreakpoint = useBreakpointCarousel(breakpointMap);
+  const currentBreakpoint = useBreakpointCarousel();
   const { cardWidth, gap, activeCards, curve, rotationFactor, popDistance } = useMemo(
     () => BREAKPOINTS[currentBreakpoint],
     [currentBreakpoint]
@@ -338,7 +353,7 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
 
   const isDesktop = currentBreakpoint === 'md';
   // Extra cards rendered outside the viewport for smoothness
-  const RENDER_BUFFER = isDesktop ? 4 : 1;
+  const RENDER_BUFFER = isDesktop ? 2 : 1;
 
   /* ---------------- Motion (drag→spring) --------------- */
   const dragX = useMotionValue(0);
@@ -964,7 +979,7 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
     <>
       <motion.div
         ref={containerRef}
-        className="relative w-full h-[430px] xs3:h-[450px] md:h-[600px] flex items-center overflow-hidden py-10 md:py-16 select-none touch-pan-y"
+        className="relative w-full h-[430px] xs3:h-[450px] md:h-[600px] 4xl:!h-[700px] 2k:!h-[760px] 4k:!h-[800px] flex items-center overflow-hidden py-10 md:py-16 select-none touch-pan-y"
         style={{ cursor: isDragging ? 'grabbing' : isMenuOpen ? 'default' : 'grab' }}
         role="region"
         aria-roledescription="carousel"
@@ -1020,6 +1035,7 @@ export default function HomeArcCarousel({ listName, swrKey, fallbackData }: Prop
                     popDistance={popDistance}
                     isUpdating={updatingIds.has(event.id)}
                     registerCancelPress={registerCancelPress}
+                    effectsEnabled={effectsEnabled}
                   />
                 </motion.div>
               </div>

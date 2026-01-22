@@ -29,7 +29,7 @@ const fragmentShader = `
   uniform float uDragOffset;
 
   #define PI 3.1415926538
-  const int u_line_count = 40;
+  const int u_line_count = 32;
   const float u_line_width = 7.0;
   const float u_line_blur = 10.0;
 
@@ -173,6 +173,10 @@ const ThreadsBackground: React.FC<ThreadsProps> = ({
   // Physics
   const scrollVelocity = useRef(0);
   const lastScrollY = useRef(0);
+  // Scroll performance gating (trackpad / wheel)
+  const isUserScrollingRef = useRef(false);
+  const scrollIdleTimerRef = useRef<number | null>(null);
+
 
   // Dynamic refs (live values used in handlers / RAF)
   const amplitudeRef = useRef(1);
@@ -325,7 +329,27 @@ const ThreadsBackground: React.FC<ThreadsProps> = ({
       };
     }
 
+        const SCROLL_IDLE_MS = 120;
+        const FPS_IDLE = 60;
+        const FPS_SCROLL = 45;
+
+    const markScrolling = () => {
+      isUserScrollingRef.current = true;
+
+      if (scrollIdleTimerRef.current) {
+        window.clearTimeout(scrollIdleTimerRef.current);
+      }
+
+      scrollIdleTimerRef.current = window.setTimeout(() => {
+        isUserScrollingRef.current = false;
+        scrollIdleTimerRef.current = null;
+      }, SCROLL_IDLE_MS);
+    };
+
     const handleScroll = () => {
+      // Mark "active scrolling" first so the RAF can downshift immediately
+      markScrolling();
+
       const y = window.scrollY;
       const dy = y - lastScrollY.current;
       scrollVelocity.current += dy * scrollSensRef.current;
@@ -335,13 +359,40 @@ const ThreadsBackground: React.FC<ThreadsProps> = ({
     const passiveOptions = { passive: true as const };
     window.addEventListener('scroll', handleScroll, passiveOptions);
 
+    // On some trackpads, wheel bursts are the real signal of “user is scrolling now”
+    window.addEventListener('wheel', markScrolling, passiveOptions);
+
     let currentScroll = 0;
 
+    // Time accumulator (so we can freeze animation time during scroll without “jumping”)
+    let lastT = performance.now();
+    let timeAcc = 0;
+    let lastRenderT = 0;
+
     const update = (t: number) => {
-      const damping = 0.93;
+      const dt = t - lastT;
+      lastT = t;
+
+      const scrolling = isUserScrollingRef.current;
+      const targetFps = scrolling ? FPS_SCROLL : FPS_IDLE;
+      const minFrameMs = 1000 / targetFps;
+
+      // Skip renders while scrolling to keep page scroll silky
+      if (t - lastRenderT < minFrameMs) {
+        animationFrameId.current = requestAnimationFrame(update);
+        return;
+      }
+      lastRenderT = t;
+
+      // Keep the inertia stable even when we render at 30fps
+      const baseFrameMs = 1000 / 60;
+      const frameScale = dt / baseFrameMs;
+
+      const dampingPerFrame = 0.93;
+      const damping = Math.pow(dampingPerFrame, frameScale);
 
       // Scroll inertia
-      currentScroll += scrollVelocity.current;
+      currentScroll += scrollVelocity.current * frameScale;
       scrollVelocity.current *= damping;
       if (Math.abs(scrollVelocity.current) < 0.01) scrollVelocity.current = 0;
       program.uniforms.uScrollOffset.value = currentScroll * 0.0001;
@@ -353,10 +404,10 @@ const ThreadsBackground: React.FC<ThreadsProps> = ({
       program.uniforms.uAmplitude.value = amplitudeRef.current;
       program.uniforms.uDistance.value = distanceRef.current;
       program.uniforms.uIsVertical.value = isVerticalRef.current;
-      // uDragOffset stays at 0 (set on init)
 
-      // Time
-      program.uniforms.iTime.value = t * 0.0002;
+      // Advance time ONLY when not actively scrolling
+      if (!scrolling) timeAcc += dt;
+      program.uniforms.iTime.value = timeAcc * 0.0002;
 
       renderer.render({ scene: mesh });
       animationFrameId.current = requestAnimationFrame(update);
@@ -366,17 +417,27 @@ const ThreadsBackground: React.FC<ThreadsProps> = ({
 
     return () => {
       resizeObserver.disconnect();
+
       if (animationFrameId.current) {
         cancelAnimationFrame(animationFrameId.current);
         animationFrameId.current = null;
       }
+
       window.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('wheel', markScrolling);
+
+      if (scrollIdleTimerRef.current) {
+        window.clearTimeout(scrollIdleTimerRef.current);
+        scrollIdleTimerRef.current = null;
+      }
+
       if (container.contains(gl.canvas)) container.removeChild(gl.canvas);
       gl.getExtension('WEBGL_lose_context')?.loseContext();
       programRef.current = null;
       rendererRef.current = null;
       meshRef.current = null;
     };
+
   }, [
     isReady,
     useStaticImage,

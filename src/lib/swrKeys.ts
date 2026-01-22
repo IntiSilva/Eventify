@@ -67,12 +67,6 @@ export function buildPaginatedEventsURL({
     // compact format: "id1,id2,id3"
     qs.set("exclude", excludeIds.join(","));
   }
-  console.debug('[KEYS] buildPaginatedEventsURL IN', {
-  page, limit, filters, viewTz, excludeIds: (excludeIds ?? []).slice().sort(),
-});
-console.debug('[KEYS] buildPaginatedEventsURL OUT', qs);
-
-
   return `?${qs.toString()}`;
 }
 

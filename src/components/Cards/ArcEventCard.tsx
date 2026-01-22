@@ -104,6 +104,7 @@ type Props = {
   /** Optional registry so the carousel can cancel a press when a vertical gesture is detected. */
   registerCancelPress?: (cb: () => void) => () => void;
   onEntryComplete?: (i: number) => void;
+  effectsEnabled?: boolean;
 };
 
 const entryVariants: Variants = {
@@ -139,12 +140,16 @@ function ArcEventCard({
   scrollActive = false,
   registerCancelPress,
   onEntryComplete,
+  effectsEnabled = false,
 }: Props) {
   /* -----------------------------------------------------------------------------
    * FLAGS (no hooks)
    * ----------------------------------------------------------------------------- */
   const isList = variant === 'list';
   const isCarousel = variant === 'carousel';
+    // Performance gate (lo controla el carousel: inView && !isScrolling)
+  const perfEffectsEnabled = effectsEnabled && !isUpdating;
+
 
   /* -----------------------------------------------------------------------------
    * HOOKS
@@ -211,8 +216,8 @@ function ArcEventCard({
 
   const tiltIntensityRaw = useMotionValue(0);
   const tiltIntensity = useSpring(tiltIntensityRaw, {
-    stiffness: 120,
-    damping: 20,
+    stiffness: 140,
+    damping: 32,
     mass: 0.8,
   });
 
@@ -307,6 +312,9 @@ function ArcEventCard({
    * TILT INTENSITY GATE (when tilt is allowed to be “alive”)
    * ----------------------------------------------------------------------------- */
   useEffect(() => {
+
+    if (!perfEffectsEnabled) return;
+
     // If the entry animation has not finished or the user prefers reduced motion,
     // do not enable tilt.
     if (!hasAnimatedEntry || prefersReducedMotion) {
@@ -339,6 +347,7 @@ function ArcEventCard({
 
     tiltIntensityRaw.set(target);
   }, [
+    perfEffectsEnabled,
     isDesktop,
     hasAnimatedEntry,
     prefersReducedMotion,
@@ -354,7 +363,32 @@ function ArcEventCard({
   /* -----------------------------------------------------------------------------
    * FLOATING TILT
    * ----------------------------------------------------------------------------- */
+
+
+  const shouldSubscribeFloatingTilt =
+    perfEffectsEnabled &&
+    hasAnimatedEntry &&
+    !prefersReducedMotion &&
+    isDesktop &&
+    !isHovered &&
+    (isCarousel || isMobileList) &&
+    (effectiveActive || activeByScroll) &&
+    !(isPressing || isDragging);
+
   useEffect(() => {
+
+    if (!shouldSubscribeFloatingTilt) {
+      rotateX_raw.stop();
+      rotateY_raw.stop();
+      rotateX_float.stop();
+      rotateY_float.stop();
+
+      tiltIntensityRaw.stop();
+      tiltIntensity.stop();
+
+      return;
+    }
+
     const unsubscribe = time.on('change', (t) => {
       // Entry animation still running → keep the card flat
       if (!hasAnimatedEntry) {
@@ -415,6 +449,7 @@ function ArcEventCard({
 
     return unsubscribe;
   }, [
+    shouldSubscribeFloatingTilt,
     time,
     hasAnimatedEntry,
     prefersReducedMotion,
@@ -433,6 +468,10 @@ function ArcEventCard({
     isEven,
     rotateX_raw,
     rotateY_raw,
+    rotateX_float,
+    rotateY_float,
+    tiltIntensityRaw,
+    tiltIntensity,
   ]);
 
   /* -----------------------------------------------------------------------------
@@ -490,13 +529,18 @@ function ArcEventCard({
    * HOVER (desktop)
    * ----------------------------------------------------------------------------- */
   const handleMouseEnter = () => {
+    if (!perfEffectsEnabled) return;
     if (!isDesktop || isDragging) return;
     setIsHovered(true);
   };
 
   const handleMouseLeave = () => {
+
     if (!isDesktop) return;
+    //Always clean hover
     setIsHovered(false);
+    //Don't calculate if perf disabled
+    if (!perfEffectsEnabled) return;
 
     if (isCarousel) {
       const posActive = distanceFromCenter.get() < activeZoneHalfWidth;
@@ -516,6 +560,7 @@ function ArcEventCard({
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!perfEffectsEnabled) return;
     if (!isHovered || !cardRef.current || !isDesktop || isDragging || prefersReducedMotion) return;
     const rect = cardRef.current.getBoundingClientRect();
     const offsetX = e.clientX - rect.left - rect.width / 2;
@@ -533,6 +578,7 @@ function ArcEventCard({
   const pressInZControlsRef = useRef<AnimationPlaybackControls | null>(null);
 
   const pressIn = () => {
+    if (!perfEffectsEnabled) return;
     if (prefersReducedMotion || isDragging) return;
     setIsPressing(true);
     pressBaseRef.current = { scale: scale_float.get(), innerZ: innerZ.get() };
@@ -651,6 +697,15 @@ function ArcEventCard({
     return 'text-4xs md:text-[9px] md:tracking-tight';
   }, [creatorLen, isList]);
 
+  /* -----------------------------------------------------------------------------
+   * PERFORMANCE LAYERING
+   * ----------------------------------------------------------------------------- */
+  const needsTransformLayer =
+    perfEffectsEnabled && (isHovered || effectiveActive || isPressing || isDragging);
+
+  const cardWillChange: React.CSSProperties['willChange'] = needsTransformLayer ? 'transform' : 'auto';
+
+
 
   /* -----------------------------------------------------------------------------
    * GUARDS
@@ -677,7 +732,7 @@ function ArcEventCard({
             rotateY: rotateY_display,
             scale: scale_float,
             transformStyle: 'preserve-3d',
-            willChange: 'transform',
+            willChange: cardWillChange,
           }}
           variants={entryVariants}
           initial="initial"
@@ -698,7 +753,7 @@ function ArcEventCard({
           >
             <CardContent
               className={cn(
-                'relative flex flex-col h-full md:py-4',
+                'relative flex flex-col h-full md:py-4 4xl:!py-8 2k:!py-10 4k:!py-12',
                 isList ? 'px-1.5 xs3:px-2.5 md:px-3 ' : 'px-1 xs3:px-2 md:px-2.5',
                 isUpdating && 'pointer-events-none',
               )}

@@ -250,6 +250,7 @@ export default function HomeMainEventList({
                 variant="list"
                 scrollActive={activeIndex === i && !isDesktop}
                 onEntryComplete={handleCardEntryDone}
+                effectsEnabled
               />
             </div>
           ))}

@@ -143,26 +143,7 @@ export default function OrganizerEvents({
 
   // Fetch when the requested page is missing or stale
   useEffect(() => {
-  const reason =
-    (!hydrated && hasSsrSeed && currentPage === 1 && !req.hasPage)
-      ? 'blocked:waiting-ssr-seed'
-      : (req.hasPage && !reqIsStale)
-        ? 'skip:have-page-not-stale'
-        : (!req.hasPage)
-          ? 'fetch:missing-page'
-          : 'fetch:stale-page';
-
-  console.log('[org fetch decide]', {
-    reason,
-    hydrated,
-    hasSsrSeed,
-    currentPage,
-    hasPage: req.hasPage,
-    metaEPP: req.meta?.eventsPerPage,
-    pageSize,
-    reqIsStale,
-  });
-
+    
   // If wrapper has SSR for page 1, give it one tick to seed the store before fetching.
   if (!hydrated && hasSsrSeed && currentPage === 1 && !req.hasPage) return;
 

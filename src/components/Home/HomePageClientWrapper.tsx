@@ -219,7 +219,7 @@ const cachedFeaturedEvents = useEventsByIds(featuredIds);
 const upcomingFallback = upcomingEvents.length ? upcomingEvents : cachedUpcomingEvents;
 const featuredFallback = featuredEvents.length ? featuredEvents : cachedFeaturedEvents;
 
-// Optional safety: seed the store from SSR when the lists are empty (first load / hard refresh)
+// Safety: seed the store from SSR when the lists are empty (first load / hard refresh)
 const { upsertEvents, setList } = useStoreWriters();
 useEffect(() => {
   if (upcomingEvents.length && upcomingIds.length === 0) {
@@ -288,7 +288,7 @@ useEffect(() => {
     // Scroll up immediately on submit/close
     setPendingScroll(wantsSearch ? 'search' : 'home')
 
-    const qs = buildEventsQS(filters); // sin viewTz en la URL pública
+    const qs = buildEventsQS(filters);
     router.push(qs ? `/?${qs}` : '/', { scroll: false });
   },
   [router]
