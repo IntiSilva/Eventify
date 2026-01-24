@@ -7,7 +7,7 @@ import { createClerkClient } from '@clerk/backend'
 import { prisma } from '@/lib/prisma'
 import { UserRole, type Prisma } from '@/generated/prisma'
 import { normalizeUsername } from '@/lib/utils'
-
+import { newE2EContext } from './helpers/new-context'
 /** Ensure a Clerk user exists for this email (create if needed) and return its clerkId. */
 async function ensureClerkUser(email: string, password: string, username?: string) {
   const secretKey = process.env.CLERK_SECRET_KEY
@@ -175,7 +175,7 @@ export default async function globalSetup(config: FullConfig) {
     })
 
     // 3) Spin up a browser context, sign in, and save its storageState to disk
-    const ctx = await browser.newContext({ baseURL })
+    const ctx = await newE2EContext(browser, { baseURL })
     const page = await ctx.newPage()
     await page.goto('/') // hit a public route to bootstrap the app
 

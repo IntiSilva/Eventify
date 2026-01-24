@@ -471,7 +471,6 @@ function ArcEventCard({
     rotateX_float,
     rotateY_float,
     tiltIntensityRaw,
-    tiltIntensity,
   ]);
 
   /* -----------------------------------------------------------------------------

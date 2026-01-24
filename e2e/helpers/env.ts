@@ -1,4 +1,5 @@
 import { test, type Browser, type Page } from '@playwright/test';
+import { newE2EContext } from './new-context';
 
 
 export const authName = () => test.info().project.name.split(' - ').at(-1);
@@ -18,7 +19,7 @@ export async function withContext(
   storageState: string,
   fn: (pg: Page) => Promise<void>,
 ) {
-  const ctx = await browser.newContext({
+  const ctx = await newE2EContext(browser, {
     baseURL: getBaseURL(),
     storageState,
   });

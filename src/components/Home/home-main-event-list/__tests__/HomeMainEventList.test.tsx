@@ -20,7 +20,10 @@ const variantState: { value: Variant; listeners: Set<() => void> } = {
 vi.mock('@/components/Home/home-main-event-list/useHomeMainEventList', async () => {
   const React = await import('react')
 
-  function useHomeMainEventList(initialEventsPayload: HomeMainInitialPayload) {
+  function useHomeMainEventList(
+    initialEventsPayload: HomeMainInitialPayload,
+    _scrollTopAnchorRef?: { current: HTMLElement | null },
+  ) {
     // React-aware external store subscription
     const variant = React.useSyncExternalStore(
       (onStoreChange) => {
@@ -46,6 +49,7 @@ vi.mock('@/components/Home/home-main-event-list/useHomeMainEventList', async () 
 
     const totalPages = variant === 'filtered' ? 1 : 2
     const [page, setPage] = React.useState(1)
+    const isAnyFilterActive = variant === 'filtered'
 
     React.useEffect(() => {
       setPage(1)
@@ -58,6 +62,7 @@ vi.mock('@/components/Home/home-main-event-list/useHomeMainEventList', async () 
       pagePending: false,
       isLoading: false,
       isValidating: false,
+      isAnyFilterActive,
       error: undefined,
       isDesktop: true,
       smoothX: {} as unknown,
@@ -122,6 +127,11 @@ vi.mock('@/components/LordIcons/AnimatedCarouselArrow', () => ({
       {direction}
     </button>
   ),
+}))
+
+vi.mock('@/components/LordIcons/AnimatedIcon', () => ({
+  __esModule: true,
+  default: () => <span aria-hidden="true" />,
 }))
 
 // ----------------------
@@ -209,18 +219,29 @@ describe('HomeMainEventList', () => {
 
   it('updates cards and page indicator when filters change', async () => {
     const payload = createPayload(['event-1', 'event-2', 'event-3'])
+    const anchorRef = { current: document.createElement('div') } as {
+      current: HTMLElement | null
+    }
 
-    renderWithProviders(<HomeMainEventList initialEventsPayload={payload} />)
+    const view = renderWithProviders(<HomeMainEventList initialEventsPayload={payload} />)
 
     // Estado inicial
     await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(3))
     await waitFor(() => expect(screen.getByText(/Page 1 of 2/i)).toBeInTheDocument())
 
-    // Cambia "filtros" (vía variante del hook) -> se reduce a 1 card y 1 página
+    // Switch "filters" (via the hook variant) -> enters search mode.
+    // In the real app, the wrapper also passes scrollTopAnchorRef at this point,
+    // so we simulate it with a rerender to avoid triggering the modeMismatch guard.
+
     await act(async () => {
       setVariant('filtered')
+      view.rerender(
+        <HomeMainEventList
+          initialEventsPayload={payload}
+          scrollTopAnchorRef={anchorRef}
+        />
+      )
     })
-
     await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(1))
 
     // pagination and arrows should not render when there's only one page

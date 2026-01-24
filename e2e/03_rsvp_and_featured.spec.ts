@@ -10,6 +10,7 @@ import {
 } from './helpers/rsvp-and-featured';
  import { withContext, isAuth as is } from './helpers/env';
  import { createEventAsOrganizer } from './helpers/home-list-filters';
+ import { newE2EContext } from './helpers/new-context';
 
 // Stable ID for this spec run (does not change between tests)
 const RUN_ID = (process.env.E2E_RUN_ID ?? randomUUID()).slice(0, 8);
@@ -94,7 +95,7 @@ test.describe('03 — RSVP & Featured (create → Menu, cross-session)', () => {
 
     // 2) User A (admin) confirms RSVP
     {
-      const ctx = await browser.newContext({
+      const ctx = await newE2EContext(browser, {
         baseURL,
         storageState: 'e2e/.auth/admin.json',
       });
@@ -106,7 +107,7 @@ test.describe('03 — RSVP & Featured (create → Menu, cross-session)', () => {
 
     // 3) User B (organizer) confirms RSVP → we cross the e2e threshold = 2
     {
-      const ctx = await browser.newContext({
+      const ctx = await newE2EContext(browser, {
         baseURL,
         storageState: 'e2e/.auth/organizer.json',
       });
@@ -118,7 +119,7 @@ test.describe('03 — RSVP & Featured (create → Menu, cross-session)', () => {
 
     // 4) Verify "Featured" badge on the card (forcing a refetch of the carousel)
     {
-      const ctx = await browser.newContext({
+      const ctx = await newE2EContext(browser, {
         baseURL,
         storageState: 'e2e/.auth/admin.json',
       });

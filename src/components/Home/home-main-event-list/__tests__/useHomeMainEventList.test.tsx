@@ -23,6 +23,7 @@ let upcomingList: string[] = [];
 const registerMainKeyMock = vi.fn();
 const unregisterMainKeyMock = vi.fn();
 const openMenuMock = vi.fn();
+const touchSearchPageMock = vi.fn();
 
 const makeUser = (overrides: Partial<UserProfileForAvatar> = {}): UserProfileForAvatar => ({
   clerkId: 'clerk-1',
@@ -76,7 +77,7 @@ const seedSearchBucket = (
   key: string,
   page: number,
   ids: string[],
-  meta: PaginatedMetadata
+  meta?: PaginatedMetadata
 ) => {
   let bucket = searchBuckets.get(key);
   if (!bucket) {
@@ -84,7 +85,7 @@ const seedSearchBucket = (
     searchBuckets.set(key, bucket);
   }
   bucket.pages.set(page, ids);
-  bucket.meta = meta;
+  if ( meta ) bucket.meta = meta;
 };
 
 /* ------------------------------------------------------------------ */
@@ -109,8 +110,17 @@ vi.mock('@/contexts/EventsContext', () => ({
     upsertEvents: (events: EventWithCreatorAndRsvps[]) => {
       events.forEach((event) => eventsStore.set(event.id, event));
     },
-    setSearchPage: (key: string, page: number, ids: string[], meta: PaginatedMetadata) => {
-      seedSearchBucket(key, page, ids, meta);
+    setSearchPage: (
+       key: string,
+       page: number,
+       ids: string[],
+       meta?: PaginatedMetadata,
+       _opts?: { touch?: 'front' | 'back'; anchorPage?: number }
+     ) => {
+       seedSearchBucket(key, page, ids, meta);
+     },
+    touchSearchPage: (key: string, page: number) => {
+      touchSearchPageMock(key, page);
     },
   }),
   useSearchPage: (key: string, page: number) => {
@@ -234,6 +244,7 @@ describe('useHomeMainEventList', () => {
     registerMainKeyMock.mockReset();
     unregisterMainKeyMock.mockReset();
     openMenuMock.mockReset();
+    touchSearchPageMock.mockReset();
     seenSearches.length = 0;
     updateSearchParams({});
 
@@ -428,60 +439,36 @@ describe('useHomeMainEventList', () => {
     upcomingList = ['event-3', 'event-1'];
     const payload = createInitialPayload(['event-2']);
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input) =>
-      jsonResponse(
-        okPage([], {
-          totalEvents: 0,
-          totalPages: 1,
-          currentPage: 1,
-          eventsPerPage: PAGE_SIZE_MAIN,
-        })
-      )
-    );
-
     renderHookWithProviders(() => useHomeMainEventList(payload));
 
     await flushMicrotasks();
     flushRaf();
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
+      expect(registerMainKeyMock).toHaveBeenCalled();
     });
 
-    const called = fetchSpy.mock.calls[0][0];
+    const called = registerMainKeyMock.mock.calls[0][0];
     const url = extractUrl(called);
 
     expect(url.searchParams.get('exclude')).toBe('event-1,event-3');
-
-    fetchSpy.mockRestore();
   });
 
   it('includes viewerTz in the fetch URL (ensuring cache separation by TZ)', async () => {
     const payload = createInitialPayload(['e-1', 'e-2']);
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
-      jsonResponse(
-        okPage([], {
-          totalEvents: 0,
-          totalPages: 1,
-          currentPage: 1,
-          eventsPerPage: PAGE_SIZE_MAIN,
-        })
-      )
-    );
-
     renderHookWithProviders(() => useHomeMainEventList(payload));
     await flushMicrotasks();
     flushRaf();
 
-    expect(fetchSpy).toHaveBeenCalled();
-    const called = fetchSpy.mock.calls[0][0];
+    await waitFor(() => {
+      expect(registerMainKeyMock).toHaveBeenCalled();
+    });
+    const called = registerMainKeyMock.mock.calls[0][0];
     const url = extractUrl(called);
 
     // Assert TZ param is present
     expect(url.searchParams.get('viewTz')).toBe('UTC');
-
-    fetchSpy.mockRestore();
   });
 
   it('registers the main list key on mount and unregisters it on unmount', () => {
@@ -512,28 +499,19 @@ describe('useHomeMainEventList', () => {
       excludeFromMainListIds: ['ssr-1'],
     };
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
-      jsonResponse(
-        okPage([], {
-          totalEvents: 0,
-          totalPages: 1,
-          currentPage: 1,
-          eventsPerPage: PAGE_SIZE_MAIN,
-        })
-      )
-    );
-
     renderHookWithProviders(() => useHomeMainEventList(payload));
     await flushMicrotasks();
     flushRaf();
 
-    expect(fetchSpy).toHaveBeenCalled();
-    const called = fetchSpy.mock.calls[0][0];
-    const url = extractUrl(called);
+    await waitFor(() => {
+      expect(registerMainKeyMock).toHaveBeenCalled();
+    });
 
-    // Expect a merged + sorted exclude (lexicographically)
-    expect(url.searchParams.get('exclude')).toBe('ssr-1,ssr-2,up-1');
+    // Can register more than once: SSR-excludes can only exist on the first render
+    const excludes = registerMainKeyMock.mock.calls
+      .map((c) => extractUrl(c[0] as string).searchParams.get('exclude'))
+      .filter(Boolean);
 
-    fetchSpy.mockRestore();
+      expect(excludes).toContain('ssr-1,ssr-2,up-1');
   });
 });

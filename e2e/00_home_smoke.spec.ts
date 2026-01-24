@@ -1,5 +1,6 @@
 import { test, expect, type Browser, type Page } from '@playwright/test';
 import { isAuth as is } from './helpers/env';
+import { newE2EContext } from './helpers/new-context';
 
 // Use admin session by default for tests that rely on `page`
 test.use({ storageState: 'e2e/.auth/admin.json' });
@@ -17,7 +18,7 @@ function getBaseURL(): string {
  * (e.g. organizer, admin).
  */
 async function newPageWithState(browser: Browser, storageState: string): Promise<Page> {
-  const ctx = await browser.newContext({
+  const ctx = await newE2EContext(browser, {
     baseURL: getBaseURL(),
     storageState,
   });

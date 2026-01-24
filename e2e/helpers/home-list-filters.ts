@@ -7,8 +7,11 @@ import {
 } from '@playwright/test';
 import { normalizeStringForSearch } from '@/lib/utils';
 import { getBaseURL } from './env';
+import { newE2EContext } from './new-context';
 
 // Seed helpers ---------------------------------------------------------------
+
+const REDIRECT_TIMEOUT = process.env.CI ? 60_000 : 30_000;
 
 export async function createEventAsOrganizer(
   browser: Browser,
@@ -16,43 +19,74 @@ export async function createEventAsOrganizer(
   options?: { description?: string; location?: string; category?: string },
 ) {
   const baseURL = getBaseURL();
-  const ctx = await browser.newContext({
+  const ctx = await newE2EContext(browser, {
     baseURL,
     storageState: 'e2e/.auth/organizer.json',
   });
 
-  const page = await ctx.newPage();
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
 
-  await page.goto('/events/new');
+  try {
+    const page = await ctx.newPage();
 
-  await page.getByLabel('Title').fill(title);
-  await page
-    .getByLabel('Description')
-    .fill(options?.description ?? 'E2E seed');
-  await page.getByLabel('Location').fill(options?.location ?? 'CABA');
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+    page.on('pageerror', (err) => {
+      pageErrors.push(String(err?.message ?? err));
+    });
 
-  const category = options?.category ?? 'Music';
-  const categorySection = page.getByText(/^Category$/).locator('..');
-  const categoryTrigger = categorySection.getByRole('combobox').first();
-  await categoryTrigger.click();
-  await page
-    .locator('[data-slot="select-content"][data-state="open"]')
-    .waitFor();
-  await page
-    .getByRole('option', { name: new RegExp(`^${category}$`, 'i') })
-    .click();
+    await page.goto('/events/new', { waitUntil: 'domcontentloaded' });
 
-  await page.getByLabel('Contact Email').fill('contact@example.com');
+    await page.getByLabel('Title').fill(title);
+    await page.getByLabel('Description').fill(options?.description ?? 'E2E seed');
+    await page.getByLabel('Location').fill(options?.location ?? 'CABA');
 
-  const useProfilePhone = page.getByRole('checkbox', {
-    name: /use my profile phone number/i,
-  });
-  if (await useProfilePhone.isChecked()) await useProfilePhone.click();
+    const category = options?.category ?? 'Music';
+    const categorySection = page.getByText(/^Category$/).locator('..');
+    const categoryTrigger = categorySection.getByRole('combobox').first();
 
-  await page.getByRole('button', { name: /create event/i }).click();
-  await page.waitForURL('**/organizer**', { timeout: 30_000 });
+    await categoryTrigger.click();
+    await page.locator('[data-slot="select-content"][data-state="open"]').waitFor();
+    await page
+      .getByRole('option', { name: new RegExp(`^${category}$`, 'i') })
+      .click();
 
-  await ctx.close();
+    // In headless mode, it sometimes remains open and covers clicks
+    await page.keyboard.press('Escape');
+
+    await page.getByLabel('Contact Email').fill('contact@example.com');
+
+    const useProfilePhone = page.getByRole('checkbox', {
+      name: /use my profile phone number/i,
+    });
+    if (await useProfilePhone.isChecked()) await useProfilePhone.click();
+
+    const submit = page.getByRole('button', { name: /create event/i });
+    await expect(submit).toBeEnabled();
+
+    // Avoid race: waiting for URL and click at the same time
+    await Promise.all([
+      page.waitForURL('**/organizer**', {
+        timeout: REDIRECT_TIMEOUT,
+        waitUntil: 'domcontentloaded',
+      }),
+      submit.click(),
+    ]);
+  } catch (e) {
+    // If CI fails, leave the cause visible in the logs
+    const errDump = [
+      pageErrors.length ? `pageerror:\n- ${pageErrors.join('\n- ')}` : '',
+      consoleErrors.length ? `console.error:\n- ${consoleErrors.join('\n- ')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    throw new Error(`${String(e)}\n\n${errDump}`);
+  } finally {
+    await ctx.close().catch(() => {});
+  }
 }
 
 // Cards & search -------------------------------------------------------------

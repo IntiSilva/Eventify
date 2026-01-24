@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const PW_INTERACTIVE = process.env.PW_INTERACTIVE === '1';
+const E2E_TZ = process.env.E2E_TZ ?? 'America/Argentina/Buenos_Aires';
 
 
 /**
@@ -77,6 +78,7 @@ export default defineConfig({
   use: {
     /* Base URL to use in actions like `await page.goto('')`. */
      baseURL: 'http://localhost:3000',
+     timezoneId: E2E_TZ,
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: PW_INTERACTIVE ? 'on' : 'on-first-retry',
@@ -101,5 +103,9 @@ export default defineConfig({
      url: 'http://localhost:3000',
      reuseExistingServer: !process.env.CI,
      timeout: 120_000,
+     env: {
+      TZ: E2E_TZ,
+      E2E_TZ,
+     },
    },
 });

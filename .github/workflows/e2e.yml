@@ -49,7 +49,9 @@ jobs:
 
           NEXT_PUBLIC_E2E=${{ vars.NEXT_PUBLIC_E2E }}
           PW_INTERACTIVE=${{ vars.PW_INTERACTIVE }}
-
+          
+          E2E_TZ=${{ secrets.E2E_TZ }}
+          
           E2E_FRESH_EMAIL=${{ secrets.E2E_FRESH_EMAIL }}
           E2E_FRESH_PASSWORD=${{ secrets.E2E_FRESH_PASSWORD }}
           E2E_FRESH_USERNAME=${{ secrets.E2E_FRESH_USERNAME }}
@@ -69,11 +71,7 @@ jobs:
           E2E_ADMIN_PHONE=${{ secrets.E2E_ADMIN_PHONE }}
           EOF
 
-
-      - name: Reset + Seed E2E DB
-        run: npm run pree2e
-
-      - name: Run Playwright
+      - name: Reset + Seed E2E DB and Run Playwright
         run: npm run e2e
 
       - name: Upload Playwright report
