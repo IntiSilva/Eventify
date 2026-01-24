@@ -23,7 +23,6 @@ async function newPageWithState(browser: Browser, storageState: string): Promise
     storageState,
   });
   const page = await ctx.newPage();
-  page.on('close', () => ctx.close());
   return page;
 }
 

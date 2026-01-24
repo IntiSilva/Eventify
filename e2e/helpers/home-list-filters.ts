@@ -11,8 +11,6 @@ import { newE2EContext } from './new-context';
 
 // Seed helpers ---------------------------------------------------------------
 
-const REDIRECT_TIMEOUT = process.env.CI ? 60_000 : 30_000;
-
 export async function createEventAsOrganizer(
   browser: Browser,
   title: string,
@@ -24,20 +22,10 @@ export async function createEventAsOrganizer(
     storageState: 'e2e/.auth/organizer.json',
   });
 
-  const consoleErrors: string[] = [];
-  const pageErrors: string[] = [];
-
   try {
     const page = await ctx.newPage();
 
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
-    });
-    page.on('pageerror', (err) => {
-      pageErrors.push(String(err?.message ?? err));
-    });
-
-    await page.goto('/events/new', { waitUntil: 'domcontentloaded' });
+    await page.goto('/events/new');
 
     await page.getByLabel('Title').fill(title);
     await page.getByLabel('Description').fill(options?.description ?? 'E2E seed');
@@ -53,7 +41,7 @@ export async function createEventAsOrganizer(
       .getByRole('option', { name: new RegExp(`^${category}$`, 'i') })
       .click();
 
-    // In headless mode, it sometimes remains open and covers clicks
+    // 👇 importante en headless: a veces queda el popover arriba tapando el botón
     await page.keyboard.press('Escape');
 
     await page.getByLabel('Contact Email').fill('contact@example.com');
@@ -66,24 +54,11 @@ export async function createEventAsOrganizer(
     const submit = page.getByRole('button', { name: /create event/i });
     await expect(submit).toBeEnabled();
 
-    // Avoid race: waiting for URL and click at the same time
+    // 👇 evita race (clave)
     await Promise.all([
-      page.waitForURL('**/organizer**', {
-        timeout: REDIRECT_TIMEOUT,
-        waitUntil: 'domcontentloaded',
-      }),
+      page.waitForURL('**/organizer**', { timeout: 60_000 }),
       submit.click(),
     ]);
-  } catch (e) {
-    // If CI fails, leave the cause visible in the logs
-    const errDump = [
-      pageErrors.length ? `pageerror:\n- ${pageErrors.join('\n- ')}` : '',
-      consoleErrors.length ? `console.error:\n- ${consoleErrors.join('\n- ')}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-
-    throw new Error(`${String(e)}\n\n${errDump}`);
   } finally {
     await ctx.close().catch(() => {});
   }

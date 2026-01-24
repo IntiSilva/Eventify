@@ -79,6 +79,7 @@ export default defineConfig({
     /* Base URL to use in actions like `await page.goto('')`. */
      baseURL: 'http://localhost:3000',
      timezoneId: E2E_TZ,
+     locale: 'en-US',
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: PW_INTERACTIVE ? 'on' : 'on-first-retry',

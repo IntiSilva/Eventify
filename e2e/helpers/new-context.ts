@@ -11,6 +11,7 @@ export async function newE2EContext(browser: Browser, opts: CtxOptions = {}) {
   return browser.newContext({
     baseURL,
     timezoneId: E2E_TZ,
+    locale: 'en-US',
     reducedMotion: 'reduce',
     ...opts,
   });

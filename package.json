@@ -80,7 +80,7 @@
     "@clerk/nextjs": "6.34.5",
     "@clerk/testing": "1.13.12",
     "@eslint/eslintrc": "^3",
-    "@playwright/test": "^1.56.1",
+    "@playwright/test": "^1.58.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",

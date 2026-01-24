@@ -1,4 +1,4 @@
-import { test, expect, type Browser, type Page } from '@playwright/test';
+import { test, expect, type Browser, type Page, type BrowserContext } from '@playwright/test';
 import { isAuth as is } from './helpers/env';
 import { newE2EContext } from './helpers/new-context';
 
@@ -9,6 +9,15 @@ function getBaseURL(): string {
   return (test.info().project.use.baseURL as string) ?? 'http://localhost:3000';
 }
 
+
+// Track contexts created manually in this specification
+const openedContexts: BrowserContext[] = [];
+
+test.afterEach(async () => {
+  // Close everything that was opened in helpers, even if the test fails
+  await Promise.all(openedContexts.splice(0).map((ctx) => ctx.close().catch(() => {})));
+});
+
 /* ──────────────────────────────────────────────────────────────────────────────
  * Helpers
  * ────────────────────────────────────────────────────────────────────────────*/
@@ -18,8 +27,10 @@ async function newPageWithState(browser: Browser, storageState: string): Promise
     baseURL: getBaseURL(),
     storageState,
   });
+
+  openedContexts.push(ctx);
+
   const page = await ctx.newPage();
-  page.on('close', () => ctx.close());
   return page;
 }
 
