@@ -1,6 +1,9 @@
 # Eventify
 
 [![Deployment](https://img.shields.io/badge/Deployed-Vercel-informational?style=flat-square)](https://eventifylive.vercel.app)
+[![CI](https://github.com/IntiSilva/Eventify/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/IntiSilva/Eventify/actions/workflows/ci.yml)
+[![E2E](https://github.com/IntiSilva/Eventify/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/IntiSilva/Eventify/actions/workflows/e2e.yml)
+
 
 Modern event discovery and management platform built with Next.js, Clerk, Prisma, and Tailwind CSS.  
 Eventify lets admins and organizers publish events, collect RSVPs, and send automated reminders while giving attendees rich search, filtering, an animation-rich browsing experience, and agenda tools.
@@ -50,7 +53,7 @@ It provides:
 
 - Creation and moderation tools for events
 - Attendee RSVP flows with reminder scheduling
-- Automated transactional emails via Resend
+- Automated transactional emails via Brevo
 - Timezone-aware ordering and agenda tools  
 - A highly animated UI powered by Motion One and custom 3D/tilt effects
 
@@ -84,10 +87,10 @@ It provides:
   Featured events are automatically derived from RSVP thresholds with environment-configurable limits, plus explicit admin overrides. This allows “organic” popularity to surface events while still giving admins final control.
 
 - **Automated reminders**  
-  A cron endpoint `/api/cron/send-reminders` (secured by shared secret header + query) selects due reminders and dispatches transactional emails via Resend templates. Reminder types include day-of and 48-hours-before windows.
+  A cron endpoint `/api/cron/send-reminders` (secured by shared secret header) selects due reminders and dispatches transactional emails via **Brevo** (Transactional Emails API). Reminder types include day-of and 48-hours-before windows.
 
 - **Email templates**  
-  Reminder emails are built with React Email and can be previewed locally via scripts, making it easy to iterate on copy and layout.
+  Reminder emails are built with **React Email** (shared `EmailLayout` + reusable UI primitives ) and rendered to HTML on the server before sending. Templates can be previewed locally via `npm run preview:email`.
 
 - **Agenda & upcoming events**  
   Dedicated Agenda and Upcoming pages honor the viewer’s timezone for ordering and “today” logic. Data loaders and cookie-based timezone detection ensure consistent behavior across devices and sessions.
@@ -101,10 +104,10 @@ It provides:
   Pervasive micro-interactions across cards, lists, navigation, onboarding flows, forms, and search/filters give the app a premium feel while honoring `prefers-reduced-motion`.
 
 - **3D and tilt effects on event cards**  
-  `ArcEventCard` components use perspective transforms, hover-driven floating states, and mirrored rotations in carousels so leading and trailing cards tilt in opposite directions.
+  `ArcEventCard` components use perspective transforms, hover-driven floating states, and mirrored rotations in carousels so leading and trailing cards rotate in opposite directions.
 
 - **Agenda’s `TiltedInfiniteList` engine**  
-  Combines tilt, 3D perspective, parallax, autoplay, scroll/drag physics, and recentering of the peeked item to create an immersive, timeline-like event browsing experience.
+  Combines tilt, 3D perspective, parallax, autoplay, scroll/drag physics, and recentering of the peeked item to create an immersive, timeline-like event browsing experience (some of these features are turned off for performance e.g. parallax effect).
 
 - **Animated backgrounds with OGL**  
   Plasma, Threads, and Ripple Grid backgrounds render dynamic WebGL scenes with mouse/scroll interaction and safe fallbacks for reduced-motion users.
@@ -124,7 +127,7 @@ It provides:
 - **UI & Animation**: Motion One, OGL-powered backgrounds, Lordicon-based icon system  
 - **Auth**: Clerk (user management, sessions, role metadata) with middleware-enforced RBAC  
 - **Database**: PostgreSQL (Neon-friendly) via Prisma, with generated client in `src/generated/prisma`  
-- **Email**: Resend + React Email templates for reminders  
+- **Email**: Brevo (Transactional) + React Email templates (server-rendered to HTML) 
 - **Testing**: Vitest + Testing Library (unit/integration), Playwright (end-to-end flows)  
 
 ---
@@ -379,11 +382,10 @@ Eventify is designed for deployment on **Vercel** with a managed PostgreSQL prov
    - Set webhook endpoint to `/api/webhooks/clerk` using `CLERK_WEBHOOK_SECRET`.
 
 5. **Email & Cron**  
-   - Set `RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`.
+   - Set `BREVO_API_KEY` and `EMAIL_FROM_ADDRESS`.
    - Configure an external cron (e.g., Vercel Cron) to call:
 
      ```text
-     GET /api/cron/send-reminders?secret=<CRON_SECRET>
      Authorization: Bearer <CRON_SECRET>
      ```
 
@@ -396,6 +398,7 @@ Once configured, pushing to your main branch can trigger automatic deployments v
 - [ ] Reminder delivery depends on externally scheduled cron jobs; missing or misconfigured secrets will prevent sending and only log errors.
 - [ ] Pick a provider and integrate image and video to events.
 - [ ] Add Organizer's exclusive page profile, save previous organized events and maybe introduce a score functionality.
+- [ ] Dynamic pages for events.
 - [ ] Make full use of RSVPs "status" property, can be useful with payment integration.
 
 ---
