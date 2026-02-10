@@ -704,6 +704,14 @@ function ArcEventCard({
 
   const cardWillChange: React.CSSProperties['willChange'] = needsTransformLayer ? 'transform' : 'auto';
 
+  // Gate the creator name "shine" effect for perf:
+  // - Only animate on hover (desktop) or when the card is "active" (carousel / mobile list).
+  // - Respect reduced-motion.
+  // - Respect the parent perf gate (carousel in-view & not scrolling/dragging).
+  const creatorShineEnabled =
+    perfEffectsEnabled && !prefersReducedMotion && (isHovered || effectiveActive);
+
+
 
 
   /* -----------------------------------------------------------------------------
@@ -906,9 +914,9 @@ function ArcEventCard({
                             isList ? 'text-xs' : 'text-2xs',
                             'ml-1',
                             'font-display leading-tight lowercase',
-                            'text-transparent bg-clip-text',
-                            'bg-[linear-gradient(110deg,#d4d4d8_0%,#d4d4d8_44%,#27272a_49%,#ffffff_53%,#d4d4d8_60%,#d4d4d8_100%)]',
-                            'bg-[length:250%_100%] animate-bg-shine',
+                            creatorShineEnabled
+                              ? 'text-transparent bg-clip-text bg-[linear-gradient(110deg,#d4d4d8_0%,#d4d4d8_44%,#27272a_49%,#ffffff_53%,#d4d4d8_60%,#d4d4d8_100%)] bg-[length:250%_100%] animate-bg-shine'
+                              : 'text-zinc-300 opacity-95',
                             'truncate min-w-0',
                             usernameSize,
                           )}
