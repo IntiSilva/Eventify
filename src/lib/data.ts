@@ -633,6 +633,3 @@ export async function getHomePageData(
     initialMainListPayload,
   };
 }
-
-
-

@@ -6,11 +6,13 @@ import { ViewerTzProvider } from '@/contexts/ViewerTzContext';
 import SWRProvider from "@/components/providers/SWRProvider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { MenuContextProvider } from "@/contexts/MenuContext";
+import type { ReactNode } from 'react';
 
 
 export default async function DashboardLayout({
   children,
-}: { children: React.ReactNode }) {
+  checkout,
+}: { children: ReactNode; checkout: ReactNode }) {
   const cookieStore = await cookies();
   const cookieTz = cookieStore.get('viewerTz')?.value ?? 'UTC';
   return (
@@ -25,6 +27,7 @@ export default async function DashboardLayout({
           <main className="flex-1 pt-[65px] pb-6">
             {children}
           </main>
+          {checkout}
         </MenuContextProvider>
       </TooltipProvider>
     </SearchContextProvider>

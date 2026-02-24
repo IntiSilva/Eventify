@@ -61,6 +61,9 @@ export type EventFormSerialized = {
   contactPhone: string | null;
   contactPhoneApps?: ContactPhoneApps;
   eventTimeZone?: string | null; // optional IANA TZ from UI
+  isPaid?: boolean;
+  priceCents?: number | null;
+  currency?: string | null;
 };
 
 /** Serialized payload for update() (id required; other fields optional) */
@@ -91,6 +94,9 @@ const CreateEventSchema = z
       .min(1)
       .refine((tz) => isValidIanaTimeZone(tz), { message: "Invalid IANA time zone." })
       .optional(),
+    isPaid: z.boolean().optional(),
+    priceCents: z.number().int().positive().nullable().optional(),
+    currency: z.string().length(3).nullable().optional(),
   })
   .refine(
     (data) => {
@@ -101,6 +107,13 @@ const CreateEventSchema = z
     {
       message: "At least one contact method (email or phone) must be provided.",
       path: ["contactEmail"],
+    }
+  )
+  .refine(
+    (data) => !data.isPaid || (!!data.priceCents && !!data.currency),
+    {
+      message: "Paid events require price and currency.",
+      path: ["priceCents"],
     }
   )
   .superRefine((data, ctx) => {
@@ -183,7 +196,7 @@ export async function createEvent(data: EventFormSerialized): Promise<CreateEven
     return { success: false, errors: issues, message: "Validation failed. Please check the form fields." };
   }
 
-  const { title, description, date, location, category, contactEmail, contactPhone, contactPhoneApps, eventTimeZone } =
+  const { title, description, date, location, category, contactEmail, contactPhone, contactPhoneApps, eventTimeZone, isPaid, priceCents, currency } =
     result.data;
 
   const finalEventTzRaw = eventTimeZone ?? DEFAULT_EVENT_TZ;
@@ -213,6 +226,9 @@ export async function createEvent(data: EventFormSerialized): Promise<CreateEven
         eventTimeZone: finalEventTz,
         eventLocalDateKey,
         eventLocalMinuteOfDay,
+        isPaid: Boolean(isPaid),
+        priceCents: isPaid ? (priceCents ?? null) : null,
+        currency: isPaid ? (currency?.toUpperCase() ?? null) : null,
       },
     });
 
@@ -251,6 +267,9 @@ const UpdateEventSchema = z
       .refine((tz) => isValidIanaTimeZone(tz), { message: "Invalid IANA time zone." })
       .optional(),
     featuredByAdmin: z.boolean().optional(),
+    isPaid: z.boolean().optional(),
+    priceCents: z.number().int().positive().nullable().optional(),
+    currency: z.string().length(3).nullable().optional(),
   })
   .superRefine((data, ctx) => {
     // If phone provided in this update and non-empty => require contactPhoneApps
@@ -387,6 +406,9 @@ export async function updateEvent(
   if (result.data.description !== undefined) dataToUpdate.description = result.data.description;
   if (result.data.category !== undefined) dataToUpdate.category = result.data.category;
   if (result.data.featuredByAdmin !== undefined) dataToUpdate.featuredByAdmin = result.data.featuredByAdmin;
+  if (result.data.isPaid !== undefined) dataToUpdate.isPaid = result.data.isPaid;
+  if (result.data.priceCents !== undefined) dataToUpdate.priceCents = result.data.priceCents;
+  if (result.data.currency !== undefined) dataToUpdate.currency = result.data.currency ? result.data.currency.toUpperCase() : null;
 
   // Contact fields (nullable)
   if (result.data.contactEmail !== undefined) dataToUpdate.contactEmail = result.data.contactEmail;

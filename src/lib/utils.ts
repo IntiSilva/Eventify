@@ -445,3 +445,29 @@ export function utcIsoToWallClockDate(utcInput: string | Date, tz: string): Date
     Number(parts.hour), Number(parts.minute), Number(parts.second)
   );
 }
+
+/* ------------------------------------------------------------------ */
+/*  Pricing formatter                                                  */
+/* ------------------------------------------------------------------ */
+const ZERO_DECIMAL_CURRENCIES = new Set(['JPY', 'CLP']);
+
+export function formatPrice(priceCents: number | null | undefined, currency?: string | null) {
+  if (priceCents == null || !currency) return '';
+  const cur = currency.toUpperCase();
+  const isZero = ZERO_DECIMAL_CURRENCIES.has(cur);
+  const amount = isZero ? priceCents : priceCents / 100;
+
+  const opts: Intl.NumberFormatOptions = {
+    style: 'currency',
+    currency: cur,
+    minimumFractionDigits: isZero ? 0 : 2,
+    maximumFractionDigits: isZero ? 0 : 2,
+  };
+
+  try {
+    return new Intl.NumberFormat(undefined, opts).format(amount);
+  } catch {
+    // Fallback: show minor unit raw amount divided by 100 when possible
+    return isZero ? `${priceCents} ${cur}` : `${(priceCents / 100).toFixed(2)} ${cur}`;
+  }
+}

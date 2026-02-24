@@ -21,6 +21,10 @@ const eventBase = z.object({
   contactPhone: z.string().trim().optional(),
   contactPhoneApps: z.nativeEnum(ContactPhoneApps).optional(),
   useProfilePhone: z.boolean(),
+  /** Paid event: form stores amount in major units (string); server gets priceCents */
+  isPaid: z.boolean(),
+  priceAmount: z.string().optional(),
+  currency: z.string().optional(),
 });
 
 /** Values derived from the base schema */
@@ -87,6 +91,27 @@ function baseRefine(data: EventBaseValues, ctx: z.RefinementCtx): void {
       message: "Select a time zone.",
       path: ["eventTimeZone"],
     });
+  }
+
+  // Paid event: require amount > 0 and currency (3-letter code)
+  if (data.isPaid) {
+    const amount = (data.priceAmount ?? "").trim();
+    const num = Number(amount);
+    if (amount === "" || Number.isNaN(num) || num <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Enter a valid price greater than 0.",
+        path: ["priceAmount"],
+      });
+    }
+    const curr = (data.currency ?? "").trim();
+    if (curr.length !== 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Select a currency.",
+        path: ["currency"],
+      });
+    }
   }
 }
 

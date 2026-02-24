@@ -26,7 +26,11 @@ export type EditableEvent = Pick<
   | "contactPhone"
   | "contactPhoneApps"
   | "eventTimeZone"
+  | "isPaid"
+  | "priceCents"
+  | "currency"
 >;
+
 
 
 export type RolesForEvents = Extract<UserRole, 'admin' | 'organizer'>;
@@ -41,3 +45,23 @@ export type UserWithEvents = {
     role: RolesForEvents
     createdEvents: EditableEvent[];
 }
+
+// Lightweight event shape used by the checkout client
+export type CheckoutEventForClient = Pick<
+  Event,
+  | 'id'
+  | 'title'
+  | 'description'
+  | 'date'
+  | 'location'
+  | 'category'
+  | 'eventTimeZone'
+  | 'contactEmail'
+  | 'contactPhone'
+  | 'contactPhoneApps'
+  | 'isPaid'
+  | 'priceCents'
+  | 'currency'
+> & {
+  creator: UserProfileForAvatar | null;
+};

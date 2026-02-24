@@ -3,10 +3,11 @@
 import { auth } from "@clerk/nextjs/server"
 import { prisma } from "@/lib/prisma"
 import type { ReminderType } from "@/generated/prisma"
-import { RSVPStatus } from "@/generated/prisma"
+import { RSVPStatus, PaymentStatus } from "@/generated/prisma"
 import type { ToggleRsvpResult, UpdatedEventMinimal, ReminderPatch } from "@/types/rsvp";
 import { calcReminderUTC } from "@/lib/reminders"
 import { computeAutoFeatured } from "@/lib/constants"
+import { linkRsvpToSucceededPayment } from "@/lib/payments/confirmPaidRsvp"
 
 
 
@@ -54,7 +55,9 @@ async function updateEventFeaturedAndCount(eventId: string): Promise<{ updatedEv
 /**
  * Toggles the RSVP status for a user on a specific event.
  * If the user has an existing RSVP, it's removed (cancelled).
- * If not, a new 'confirmed' RSVP is created.
+ * If not:
+ *   - For FREE events: a new 'confirmed' RSVP is created immediately.
+ *   - For PAID events: returns action 'payment_required' (webhook will create RSVP after payment succeeds).
  * @param eventId The ID of the event to RSVP to.
  * @returns An object with the operation's result.
  */
@@ -88,54 +91,149 @@ export async function toggleRSVP(eventId: string): Promise<ToggleRsvpResult> {
         console.log(`User ${userId} removed RSVP from event ${eventId}`);
         const { updatedEvent } = await updateEventFeaturedAndCount(eventId);
 
-        // KEY CHANGE: Prepare a clear cancellation response.
+        // Cancellation response
         result = {
             success: true,
             action: "cancelled",
             message: "Attendance successfully cancelled.",
             rsvpCancelled: true,
             userId,
-            updatedEvent, // Include updated event info
+            updatedEvent,
         };
 
     } else {
-        // --- If it does not exist, create it ---
-        const newRsvp = await prisma.rSVP.create({
-            data: {
-                userId,
-                eventId,
-                status: RSVPStatus.confirmed,
-            },
-            // IMPROVEMENT: Immediately include user data in the response.
-            include: {
-                user: {
-                    select: {
-                        clerkId: true,
-                        username: true,
-                        firstName: true,
-                        lastName: true,
-                        imageUrl: true,
-                        hasImage: true,
-                        role: true, // ← include 'role' for UserProfileForAvatar
-                    }
-                }
-            }
+        // --- If it does not exist, check if event is paid ---
+        const event = await prisma.event.findUnique({
+            where: { id: eventId },
+            select: { isPaid: true },
         });
 
-        console.log(`User ${userId} RSVP'd to event ${eventId}`);
-        const { updatedEvent } = await updateEventFeaturedAndCount(eventId);
+        if (!event) {
+            return { success: false, message: "Event not found" };
+        }
 
-        // KEY CHANGE: Prepare the response with the new RSVP object.
-        result = {
-            success: true,
-            action: "created",
-            message: "Successfully confirmed attendance!",
-            newRsvp: newRsvp,
-            updatedEvent
-        };
+        // For PAID events: don't create RSVP yet; payment flow will create it via webhook
+        if (event.isPaid) {
+            console.log(`User ${userId} initiated checkout for paid event ${eventId}`);
+            result = {
+                success: true,
+                action: "payment_required",
+                message: "Payment required to complete your RSVP.",
+                eventId,
+                isPaid: true,
+            };
+        } else {
+            // For FREE events: create RSVP immediately
+            const newRsvp = await prisma.rSVP.create({
+                data: {
+                    userId,
+                    eventId,
+                    status: RSVPStatus.confirmed,
+                },
+                include: {
+                    user: {
+                        select: {
+                            clerkId: true,
+                            username: true,
+                            firstName: true,
+                            lastName: true,
+                            imageUrl: true,
+                            hasImage: true,
+                            role: true,
+                        }
+                    }
+                }
+            });
+
+            console.log(`User ${userId} RSVP'd to free event ${eventId}`);
+            const { updatedEvent } = await updateEventFeaturedAndCount(eventId);
+
+            result = {
+                success: true,
+                action: "created",
+                message: "Successfully confirmed attendance!",
+                newRsvp: newRsvp,
+                updatedEvent
+            };
+        }
     }
 
     return result;
+}
+
+/**
+ * Reactivates RSVP for a user who has already paid but canceled their attendance.
+ * Called when user clicks "Attend" again on a paid event after canceling.
+ * 
+ * Flow:
+ * 1. Find existing succeeded Payment for (userId, eventId)
+ * 2. If found, upsert RSVP to confirmed (via linkRsvpToSucceededPayment)
+ * 3. Link Payment.rsvpId to the RSVP
+ * 4. Recalculate event featured
+ * 5. Return updated event info
+ * 
+ * This does NOT create a new PaymentIntent or charge the user again.
+ */
+export async function reactivateAlreadyPaidRsvp(eventId: string): Promise<ToggleRsvpResult> {
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
+
+  // Verify event exists and is paid
+  const event = await prisma.event.findUnique({
+    where: { id: eventId },
+    select: { isPaid: true },
+  });
+
+  if (!event) {
+    return { success: false, message: 'Event not found' };
+  }
+
+  if (!event.isPaid) {
+    return { success: false, message: 'Event is not a paid event' };
+  }
+
+  // Find existing succeeded payment (should exist if called from ALREADY_PAID_NOT_ATTENDING flow)
+  const payment = await prisma.payment.findFirst({
+    where: {
+      eventId,
+      userId,
+      status: PaymentStatus.succeeded,
+    },
+    orderBy: { updatedAt: 'desc' },
+  });
+
+  if (!payment) {
+    return {
+      success: false,
+      message: 'No payment found for this event. Please complete payment first.',
+    };
+  }
+
+  // Reactivate RSVP via shared linking helper
+  try {
+    const linkResult = await linkRsvpToSucceededPayment(
+      payment.id,
+      userId,
+      eventId
+    );
+
+    // Fetch updated event for response
+    const { updatedEvent } = await updateEventFeaturedAndCount(eventId);
+
+    return {
+      success: true,
+      action: 'reactivated',
+      message: 'Successfully restored your attendance. You are now registered for this event.',
+      userId,
+      updatedEvent,
+    };
+  } catch (err) {
+    console.error(`[reactivateAlreadyPaidRsvp] error for event ${eventId}, user ${userId}:`, err);
+    return {
+      success: false,
+      message: 'Failed to restore attendance. Please try again.',
+    };
+  }
 }
 
 // Interface for the reminder input data.

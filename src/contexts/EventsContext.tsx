@@ -70,6 +70,8 @@ type EventsState = {
     search: Record<string, SearchBucket>;          // searchKey -> bucket
     searchKeyOrder: string[];                      // LRU of search keys
   };
+  // Pending payments map: eventId -> userId -> metadata
+  pending: Record<string, Record<string, { paymentIntentId?: string }>>;
 };
 
 const initialState: EventsState = {
@@ -80,6 +82,7 @@ const initialState: EventsState = {
     search: {},
     searchKeyOrder: [],
   },
+  pending: {},
 };
 
 /* ---------------------------------------------------------------------- */
@@ -100,6 +103,8 @@ type Action =
   | { type: 'TOUCH_SEARCH_KEY'; key: string; now: number }
   | { type: 'EVICT_STALE_KEYS'; now: number }
   | { type: 'APPLY_RSVP_OPT'; eventId: string; user: RsvpUser; attending: boolean }
+  | { type: 'APPLY_RSVP_PENDING'; eventId: string; userId: string; paymentIntentId?: string }
+  | { type: 'CLEAR_RSVP_PENDING'; eventId: string; userId: string }
   | { type: 'COMMIT_NEW_RSVP'; eventId: string; rsvp: RsvpItem }
   | { type: 'COMMIT_CANCEL_RSVP'; eventId: string; userId: string }
   | {
@@ -224,8 +229,7 @@ function reducer(state: EventsState, action: Action): EventsState {
         ? [action.page, ...base]
         : [...base, action.page];
 
-      // ✅ Meta policy:
-      // - si viene meta y no hay meta previa -> guardala
+      //  Meta policy:
       // - if we have meta and theres no meta -> save it
       // - if touch=front -> save it
       // - if touch=back y and there was meta -> Do not step on it (prefetch should not change the "visible" meta tag)
@@ -398,6 +402,25 @@ function reducer(state: EventsState, action: Action): EventsState {
         : evt.rsvps.filter(r => r.user.clerkId !== action.user.clerkId);
 
       return { ...state, entities: { ...state.entities, [evt.id]: { ...evt, rsvps } } };
+    }
+
+    case 'APPLY_RSVP_PENDING': {
+      const { eventId, userId, paymentIntentId } = action;
+      const nextPending = { ...(state.pending ?? {}) };
+      const evtMap = { ...(nextPending[eventId] ?? {}) };
+      evtMap[userId] = paymentIntentId ? { paymentIntentId } : {};
+      nextPending[eventId] = evtMap;
+      return { ...state, pending: nextPending };
+    }
+
+    case 'CLEAR_RSVP_PENDING': {
+      const { eventId, userId } = action;
+      const nextPending = { ...(state.pending ?? {}) };
+      const evtMap = { ...(nextPending[eventId] ?? {}) };
+      if (evtMap && userId in evtMap) delete evtMap[userId];
+      if (evtMap && Object.keys(evtMap).length) nextPending[eventId] = evtMap;
+      else delete nextPending[eventId];
+      return { ...state, pending: nextPending };
     }
 
     case 'COMMIT_NEW_RSVP': {
@@ -632,6 +655,18 @@ export function useEventsByIds(ids: string[]): EventWithCreatorAndRsvps[] {
 
 export function useEvent(eventId: string): EventWithCreatorAndRsvps | undefined {
   return useStore().state.entities[eventId];
+}
+
+/**
+ * Returns pending payment metadata for an event.
+ * - If `userId` provided, returns the paymentIntentId or null.
+ * - Otherwise returns the full per-user pending map (may be empty).
+ */
+export function useEventPending(eventId: string, userId?: string) {
+  const { state } = useStore();
+  const map = state.pending?.[eventId] ?? {};
+  if (userId) return map[userId]?.paymentIntentId ?? null;
+  return map;
 }
 
 /**
@@ -998,6 +1033,20 @@ export function useRsvpActions() {
     [dispatch]
   );
 
+  const setRsvpPending = useCallback(
+    (eventId: string, userId: string, paymentIntentId?: string) => {
+      dispatch({ type: 'APPLY_RSVP_PENDING', eventId, userId, paymentIntentId });
+    },
+    [dispatch]
+  );
+
+  const clearRsvpPending = useCallback(
+    (eventId: string, userId: string) => {
+      dispatch({ type: 'CLEAR_RSVP_PENDING', eventId, userId });
+    },
+    [dispatch]
+  );
+
   // Thin wrapper around the server action: keeps the type local and stable
   const toggleRsvpOnServer = useCallback(async (eventId: string) => {
     return (await toggleRSVP(eventId)) as {
@@ -1030,6 +1079,8 @@ export function useRsvpActions() {
     commitCancel,
     commitReminder,
     rollbackEvent,
+    setRsvpPending,
+    clearRsvpPending,
     toggleRsvpOnServer,
   };
 }

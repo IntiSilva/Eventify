@@ -12,7 +12,7 @@ import React, {
   useCallback,
 } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useUser } from '@clerk/nextjs';
 import { useSWRConfig } from 'swr';
 import { toast } from 'sonner';
@@ -23,7 +23,7 @@ import { TimezoneInfoTooltip, AttendeesLegendTooltip } from "@/components/InfoTo
 /*  App hooks & utils                                                     */
 /* ---------------------------------------------------------------------- */
 import { useMediaQuery } from '@/lib/hooks';
-import { cn, getBadgeState, formatTimeZoneLabel, tzEqualForInstant, canonicalizeTimeZone } from '@/lib/utils';
+import { cn, getBadgeState, formatTimeZoneLabel, tzEqualForInstant, canonicalizeTimeZone, formatPrice } from '@/lib/utils';
 import { useViewerTz } from '@/contexts/ViewerTzContext';
 import {
   useEvent,
@@ -47,6 +47,7 @@ import { RSVPStatus, UserRole } from '@/generated/prisma';
 /* ---------------------------------------------------------------------- */
 import {
   toggleRSVP,
+  reactivateAlreadyPaidRsvp,
   updateReminderPreference,
   type ReminderResult,
 } from '@/app/(dashboard)/rsvp/actions';
@@ -82,6 +83,7 @@ import DeleteEventButton from './DeleteEventButton';
 import ReminderToastContent, { REMINDER_TOAST_ID } from '../ReminderToastContent';
 import AdminFeaturedBadge from '../Badges/AdminFeaturedBadge';
 import AuroraFeaturedBadge from '../Badges/AuroraFeaturedBadge';
+import PricingBadge from '../Badges/PricingBadge';
 
 /* ---------------------------------------------------------------------- */
 /*  Lottie & icons                                                        */
@@ -104,6 +106,13 @@ import {
   CheckAnimatedIcon,
   CheckAnimatedIconHover,
 } from '@/lib/icons';
+import { StripeLogoDraw } from '../AnimatedLogos/AnimatedStripeLogo';
+
+/* ====================================================================== */
+/*  Constants                                                             */
+/* ====================================================================== */
+const PAID_REDIRECT_TOAST_ID = 'paid-rsvp-redirect';
+const CHECKOUT_OPENED_EVENT = 'eventify:checkout-opened';
 
 /* ====================================================================== */
 /*  Props                                                                 */
@@ -252,20 +261,41 @@ function MenuContentLoaded(
   const [isChangeReminderHovered, setIsChangeReminderHovered] = useState(false);
   const [viewEventTz, setViewEventTz] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const [isPreparingCheckout, setIsPreparingCheckout] = useState(false);
+  const [preparingCheckoutEventId, setPreparingCheckoutEventId] = useState<string | null>(null);
+  const prepareTimeoutRef = useRef<number | null>(null);
 
   const previewLocationRef = useRef<HTMLParagraphElement>(null);
   const ghostLocationRef = useRef<HTMLParagraphElement>(null);
+
+  // Duración total aprox de tu AnimatedStripeLogo.tsx:
+  // (pathLength 1.0 + delay max 0.36) ~= 1.36s
+  const PAID_TOAST_MIN_MS = 1400;
+
+  const paidIntroStartRef = useRef<number | null>(null);
+  const paidFinalizeRef = useRef<number | null>(null);
+
+  const showPaidCheckoutToast = useCallback(() => {
+    toast.loading(
+    <span className="flex items-center gap-0.5 leading-none">
+      <span className="leading-none">Powered by</span>
+      <StripeLogoDraw className="block h-5 w-auto translate-y-0.5" />
+    </span>,
+    { id: PAID_REDIRECT_TOAST_ID, duration: 8000 }
+  );
+  }, []);
 
   /* -------------------------------------------------------------------- */
   /*  Global hooks & stores                                               */
   /* -------------------------------------------------------------------- */
   const pathname = usePathname();
+  const router = useRouter();
   const { user: clerkUser, isSignedIn, isLoaded: isUserLoaded } = useUser();
   const { mutate } = useSWRConfig();
   const { getFeaturedKeys } = useFeaturedSWRKeys();
   const { getMainListKeys } = useMainListSWRKeys();
   const { upsertEvents } = useStoreWriters();
-  const { commitReminder } = useRsvpActions();
+  const { commitReminder, setRsvpPending, clearRsvpPending } = useRsvpActions();
   const { viewerTz, formatDate } = useViewerTz();
   const { mutateDebounced } = useDebouncedMutate();
   const canManage = pathname.startsWith('/organizer') || pathname.startsWith('/admin');
@@ -313,6 +343,243 @@ function MenuContentLoaded(
   };
 
   /* -------------------------------------------------------------------- */
+  /*  Paid RSVP flow (async helper)                                       */
+  /* -------------------------------------------------------------------- */
+  const preparePaidRsvp = async (eventForMode: EventWithCreatorAndRsvps): Promise<void> => {
+    setIsPreparingCheckout(true);
+    setPreparingCheckoutEventId(eventForMode.id);
+    paidIntroStartRef.current = performance.now();
+    showPaidCheckoutToast();
+
+    // safety fallback timer
+    if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
+    prepareTimeoutRef.current = window.setTimeout(() => {
+      setIsPreparingCheckout(false);
+      setPreparingCheckoutEventId(null);
+      toast.error('Checkout is taking too long. Please try again.', {
+        id: PAID_REDIRECT_TOAST_ID,
+        duration: 3000,
+      });
+    }, 8000);
+
+    try {
+      const res = await fetch('/api/payments/create-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId: eventForMode.id }),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json?.success) {
+        // Clear prepare state
+        if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
+        setIsPreparingCheckout(false);
+        setPreparingCheckoutEventId(null);
+        const errMsg = json?.error ?? `HTTP ${res.status}`;
+        toast.error(errMsg, { id: PAID_REDIRECT_TOAST_ID });
+        return;
+      }
+
+      const data = json.data;
+
+      if (data.state === 'PAYMENT_IN_PROGRESS') {
+        // mark pending locally and navigate to checkout
+        try {
+          setRsvpPending(eventForMode.id, clerkUser!.id, data.paymentIntentId ?? undefined);
+        } catch {}
+
+        // Clear fallback timer (checkout page will mount quickly)
+        if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
+        // Keep the paid toast while redirecting
+        router.push(`/checkout/${eventForMode.id}`);
+        return;
+      }
+
+      if (data.state === 'ALREADY_PAID_ATTENDING' || data.state === 'ALREADY_PAID_NOT_ATTENDING') {
+        // Handle already-paid scenarios
+        if (data.state === 'ALREADY_PAID_NOT_ATTENDING') {
+          // =================================================================
+          // PAID REACTIVATION FLOW (already paid but not attending)
+          // Apply optimistic UI + reconcile on server response
+          // =================================================================
+          
+          const prevEvent = live as EventWithCreatorAndRsvps;
+          const prevFeatured = Boolean(prevEvent.featured);
+
+          if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
+          setIsPreparingCheckout(false);
+          setPreparingCheckoutEventId(null);
+
+          // Build optimistic RSVP for current user (same pattern as free flow)
+          const optimisticUser: UserProfileForAvatar = {
+            clerkId: clerkUser!.id,
+            username: '',
+            firstName: null,
+            lastName: null,
+            imageUrl: null,
+            hasImage: false,
+            role: UserRole.user,
+          };
+
+          const optimisticRsvp: EventWithCreatorAndRsvps['rsvps'][number] = {
+            status: RSVPStatus.confirmed,
+            reminderPreferenceType: null,
+            reminderOffsetMinutes: null,
+            reminderScheduledAt: null,
+            reminderSentAt: null,
+            user: optimisticUser,
+          };
+
+          // Build optimistic event with updated RSVPs
+          const nextRsvps = [
+            ...prevEvent.rsvps.filter((r) => r.user.clerkId !== clerkUser!.id),
+            optimisticRsvp,
+          ];
+
+          const nextConfirmedCount = nextRsvps.reduce(
+            (acc, r) => acc + (r.status === RSVPStatus.confirmed ? 1 : 0),
+            0
+          );
+          const optimisticFeatured = nextConfirmedCount >= FEATURED_THRESHOLD;
+
+          const optimisticEvent: EventWithCreatorAndRsvps = {
+            ...prevEvent,
+            rsvps: nextRsvps,
+            featured: optimisticFeatured,
+          };
+
+          // Immediately apply optimistic UI (toggle turns green, counts update)
+          onEventUpdate?.(optimisticEvent);
+
+          // Server reconciliation in transition
+          startTransition(() => {
+            reactivateAlreadyPaidRsvp(eventForMode.id)
+              .then(async (reactivateResult) => {
+                if (!reactivateResult.success) {
+                  toast.error(reactivateResult.message, { id: PAID_REDIRECT_TOAST_ID });
+                  // Rollback optimistic UI
+                  onEventUpdate?.(prevEvent);
+                  return;
+                }
+
+                if (reactivateResult.action !== 'reactivated' || !reactivateResult.updatedEvent) {
+                  // Unexpected response
+                  toast.error('Could not reactivate attendance.', { id: PAID_REDIRECT_TOAST_ID });
+                  onEventUpdate?.(prevEvent);
+                  return;
+                }
+
+                // Try to fetch authoritative, fully-hydrated event (with rsvps.user) from server
+                try {
+                  const bulk = await fetch('/api/events/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids: [eventForMode.id], rsvpStatus: 'confirmed' }),
+                  });
+                  const jb = await bulk.json().catch(() => null);
+
+                  let committedFinal: EventWithCreatorAndRsvps = {
+                    ...optimisticEvent,
+                    featured: reactivateResult.updatedEvent.featured,
+                  };
+
+                  if (bulk.ok && jb?.success && Array.isArray(jb.data) && jb.data.length) {
+                    // Use authoritative event payload from server which includes full user profiles
+                    committedFinal = jb.data[0] as EventWithCreatorAndRsvps;
+                  }
+
+                  // Commit to EventsContext using authoritative (or fallback) event
+                  upsertEvents([committedFinal]);
+                  onEventUpdate?.(committedFinal);
+
+                  // Update caches if featured status changed
+                  const finalIsFeatured = Boolean(committedFinal.featured);
+                  const featuredChanged = prevFeatured !== finalIsFeatured;
+
+                  if (featuredChanged) {
+                    emitFeaturedChange({ id: committedFinal.id, toFeatured: finalIsFeatured });
+
+                    const featuredKeys = Array.from(new Set(getFeaturedKeys()));
+                    if (!finalIsFeatured) {
+                      const mainKeys = Array.from(new Set(getMainListKeys()));
+                      await mutateDebounced([...featuredKeys, ...mainKeys], isEventsListKey);
+                    } else {
+                      await mutateDebounced(featuredKeys);
+                    }
+                  }
+
+                  toast.success(reactivateResult.message, {
+                    id: PAID_REDIRECT_TOAST_ID,
+                    duration: 1000,
+                  });
+                } catch (e) {
+                  // If fetching the authoritative event fails, fall back to committing optimistic event
+                  const committedFinal: EventWithCreatorAndRsvps = {
+                    ...optimisticEvent,
+                    featured: reactivateResult.updatedEvent.featured,
+                  };
+                  upsertEvents([committedFinal]);
+                  onEventUpdate?.(committedFinal);
+                  const finalIsFeatured = Boolean(reactivateResult.updatedEvent.featured);
+                  const featuredChanged = prevFeatured !== finalIsFeatured;
+                  if (featuredChanged) {
+                    emitFeaturedChange({ id: committedFinal.id, toFeatured: finalIsFeatured });
+                    const featuredKeys = Array.from(new Set(getFeaturedKeys()));
+                    if (!finalIsFeatured) {
+                      const mainKeys = Array.from(new Set(getMainListKeys()));
+                      await mutateDebounced([...featuredKeys, ...mainKeys], isEventsListKey);
+                    } else {
+                      await mutateDebounced(featuredKeys);
+                    }
+                  }
+                  toast.success(reactivateResult.message, {
+                    id: PAID_REDIRECT_TOAST_ID,
+                    duration: 1000,
+                  });
+                }
+              })
+              .catch((err) => {
+                console.error('[reactivate] error:', err);
+                toast.error('Failed to restore attendance. Please try again.', { id: PAID_REDIRECT_TOAST_ID });
+                // Rollback optimistic UI
+                onEventUpdate?.(prevEvent);
+              });
+          });
+          return;
+        }
+
+        // For ALREADY_PAID_ATTENDING, fetch authoritative event (user is already confirmed)
+        try {
+          const bulk = await fetch('/api/events/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: [eventForMode.id], rsvpStatus: 'confirmed' }),
+          });
+          const jb = await bulk.json().catch(() => null);
+          if (bulk.ok && jb?.success && Array.isArray(jb.data) && jb.data.length) {
+            upsertEvents(jb.data);
+          }
+        } catch (e) {
+          // ignore fetch errors — fallback to global mutate
+          mutateDebounced(getFeaturedKeys().concat(getMainListKeys()).filter(Boolean), isEventsListKey, 50);
+        } finally {
+          if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
+          setIsPreparingCheckout(false);
+          setPreparingCheckoutEventId(null);
+          toast.success('Payment already recorded — you are registered for this event.', { id: PAID_REDIRECT_TOAST_ID });
+          return;
+        }
+      }
+    } catch (err) {
+      if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
+      setIsPreparingCheckout(false);
+      setPreparingCheckoutEventId(null);
+      toast.error('Failed to prepare checkout. Please try again.', { id: PAID_REDIRECT_TOAST_ID });
+      return;
+    }
+  };
+
+  /* -------------------------------------------------------------------- */
   /*  RSVP toggle (optimistic + server + lists + debounced revalidations) */
   /* -------------------------------------------------------------------- */
   const handleRsvpToggle = () => {
@@ -320,6 +587,13 @@ function MenuContentLoaded(
       return toast.error('Please sign in to attend events.');
     }
     if (mode !== 'non-editable' || !('rsvps' in live)) return;
+
+    const eventForMode = live as EventWithCreatorAndRsvps;
+    if (!isCurrentUserAttending && eventForMode.isPaid) {
+      // Paid RSVP flow — delegate to async handler
+      preparePaidRsvp(eventForMode);
+      return;
+    }
 
     const toastId = toast.loading('Updating attendance...');
 
@@ -406,7 +680,7 @@ function MenuContentLoaded(
           }
 
           // Reconcile with server data
-          const baseEventAfterServer = data.updatedEvent
+          const baseEventAfterServer = (data.action !== 'payment_required' && data.updatedEvent)
             ? {
                 ...optimisticEvent,
                 featured: data.updatedEvent.featured,
@@ -454,6 +728,15 @@ function MenuContentLoaded(
             );
             committedFinal = { ...baseEventAfterServer, rsvps: mergedRsvps };
             onRsvpCancelled?.(eventId);
+
+          } else if (data.action === 'payment_required') {
+            // Paid event detected during toggle — redirect to checkout flow
+            // This is a safety fallback in case isPaid flag wasn't caught earlier
+            try {
+              setRsvpPending(data.eventId, clerkUser?.id ?? '', undefined);
+            } catch {}
+            router.push(`/checkout/${data.eventId}`);
+            return;
           }
 
           // Write entity to store
@@ -594,6 +877,43 @@ function MenuContentLoaded(
   };
 
   /* -------------------------------------------------------------------- */
+  /*  Checkout overlay mount listener                                     */
+  /* -------------------------------------------------------------------- */
+  useEffect(() => {
+    const finalize = () => {
+      setIsPreparingCheckout(false);
+      setPreparingCheckoutEventId(null);
+      toast.dismiss(PAID_REDIRECT_TOAST_ID);
+      props.onOpenChange(false);
+    };
+
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ eventId?: string }>;
+      const openedId = ce.detail?.eventId;
+      if (!openedId) return;
+      if (!isPreparingCheckout || preparingCheckoutEventId !== openedId) return;
+
+      // overlay montó => cancelá fallback 8s
+      if (prepareTimeoutRef.current) window.clearTimeout(prepareTimeoutRef.current);
+      prepareTimeoutRef.current = null;
+
+      // asegurá “mínimo” tiempo visible del toast/animación
+      const start = paidIntroStartRef.current ?? performance.now();
+      const elapsed = performance.now() - start;
+      const remaining = Math.max(0, PAID_TOAST_MIN_MS - elapsed);
+
+      if (paidFinalizeRef.current) window.clearTimeout(paidFinalizeRef.current);
+      paidFinalizeRef.current = window.setTimeout(() => {
+        paidFinalizeRef.current = null;
+        finalize();
+      }, remaining);
+    };
+
+    window.addEventListener(CHECKOUT_OPENED_EVENT, handler);
+    return () => window.removeEventListener(CHECKOUT_OPENED_EVENT, handler);
+  }, [isPreparingCheckout, preparingCheckoutEventId, props]);
+
+  /* -------------------------------------------------------------------- */
   /*  Date/time label helper                                              */
   /* -------------------------------------------------------------------- */
   function formatEventDate(): string {
@@ -710,6 +1030,11 @@ function MenuContentLoaded(
                     badgeState !== 'none' ? 'pb-8.5' : ''
                   )}
                 >
+
+                  <div className="absolute flex top-1 left-1 z-10 pointer-events-none">
+                    <PricingBadge variant='menu' isPaid={Boolean(live.isPaid)} />
+                  </div>
+
                   {badgeState !== 'none' && (
                     <div
                       className={cn('absolute z-10 flex bottom-1 right-1.5', {
@@ -726,6 +1051,12 @@ function MenuContentLoaded(
                 </DialogHeader>
               ) : (
                 <DrawerHeader className="p-6 pb-4 shrink-0 text-left border-b border-zinc-800">
+
+                  <div className="absolute flex -top-4 left-2 z-10 pointer-events-none">
+                    <PricingBadge variant='menu' isPaid={Boolean(live.isPaid)} />
+                  </div>
+
+
                   {badgeState !== 'none' && (
                     <div
                       className={cn('absolute z-10 flex', {
@@ -781,15 +1112,11 @@ function MenuContentLoaded(
                   <div className="flex items-center mb-3 gap-3 text-xs xs4:text-base xl:text-sm text-zinc-300">
                     <AnimatedIcon icon={CalendarAnimatedIcon} size={16} state="in" />
 
-                    {/* Group: Date + Tooltip (tooltip only if there’s TZ UI) */}
                     <div className="flex-1 min-w-0">
                       <span className="inline min-w-0">
-                        <span
-                          data-testid="menu-event-date"
-                          className="whitespace-normal break-words"
-                         >
+                        <span data-testid="menu-event-date" className="whitespace-normal break-words">
                           {formatEventDate()}
-                          </span>
+                        </span>
                         {showTzHelp && (
                           <TimezoneInfoTooltip
                             where={mode === 'editable' ? 'menu-editable' : 'menu-badge'}
@@ -806,17 +1133,12 @@ function MenuContentLoaded(
                       </span>
                     </div>
 
-                    {/* TZ UI */}
                     {shouldShowTzBadgeEditable ? (
                       <div className="ml-auto flex flex-col items-end md:flex-row md:items-center md:gap-1">
-                        <span className="text-2xs self-start ml-2 text-zinc-400 md:hidden">
-                          Timezone:
-                        </span>
+                        <span className="text-2xs self-start ml-2 text-zinc-400 md:hidden">Timezone:</span>
                         <span className="inline-flex items-center rounded-md bg-zinc-800/60 px-2 py-0.5 text-2xs">
                           <span className="hidden md:inline mr-1">Timezone:</span>
-                          <span className="whitespace-nowrap">
-                            {formatTimeZoneLabel(live.eventTimeZone)}
-                          </span>
+                          <span className="whitespace-nowrap">{formatTimeZoneLabel(live.eventTimeZone)}</span>
                         </span>
                       </div>
                     ) : shouldShowTzToggle ? (
@@ -830,59 +1152,19 @@ function MenuContentLoaded(
                     ) : null}
                   </div>
 
-                  {/* Location */}
                   <div className="flex items-start gap-3 text-zinc-300">
                     <AnimatedIcon icon={LocationAnimatedIcon} size={16} state="in" />
                     <div className="flex-1 min-w-0 relative">
-                      {/* Collapsed preview (clamped). Only visible when closed. */}
-                      {!isLocationOpen && (
-                        <p
-                          ref={previewLocationRef}
-                          title={live.location}
-                          className={cn(
-                            "text-xs xs4:text-sm whitespace-pre-wrap break-words hyphens-auto",
-                            "line-clamp-2"
-                          )}
-                        >
+                      {!isLocationOpen ? (
+                        <p ref={previewLocationRef} title={live.location} className={cn("text-xs xs4:text-sm whitespace-pre-wrap break-words hyphens-auto", "line-clamp-2")}>
                           {live.location}
                         </p>
-                      )}
-
-                      {/* Ghost (full height) to measure overflow; absolutely positioned, invisible */}
-                      <p
-                        ref={ghostLocationRef}
-                        aria-hidden
-                        className={cn(
-                          "absolute opacity-0 -z-10 pointer-events-none",
-                          "inset-x-0 top-0",
-                          "text-xs xs4:text-sm whitespace-pre-wrap break-words hyphens-auto"
-                        )}
-                      >
-                        {live.location}
-                      </p>
-
-                      {/* Expanded content with real scroll (bounded height) */}
-                      {isLocationOpen && (
-                        <ScrollArea
-                          id="full-location"
-                          aria-label="Full location"
-                          className={cn(
-                            "pr-3 relative overscroll-contain overflow-y-auto",
-                            "max-h-12 xl:max-h-14 2xl:max-h-16",
-                            "[&::-webkit-scrollbar]:w-1",
-                            "[&::-webkit-scrollbar-track]:bg-transparent",
-                            "[&::-webkit-scrollbar-thumb]:rounded-full",
-                            "[&::-webkit-scrollbar-thumb]:bg-emerald-900",
-                            "[&::-webkit-scrollbar-thumb:hover]:bg-emerald-600"
-                          )}
-                        >
-                          <p className="text-xs xs4:text-sm whitespace-pre-wrap break-words hyphens-auto">
-                            {live.location}
-                          </p>
+                      ) : (
+                        <ScrollArea id="full-location" aria-label="Full location" className={cn("pr-3 relative overscroll-contain overflow-y-auto", "max-h-12 xl:max-h-14 2xl:max-h-16", "[&::-webkit-scrollbar]:w-1", "[&::-webkit-scrollbar-track]:bg-transparent", "[&::-webkit-scrollbar-thumb]:rounded-full", "[&::-webkit-scrollbar-thumb]:bg-emerald-900", "[&::-webkit-scrollbar-thumb:hover]:bg-emerald-600")}>
+                          <p className="text-xs xs4:text-sm whitespace-pre-wrap break-words hyphens-auto">{live.location}</p>
                         </ScrollArea>
                       )}
 
-                      {/* Toggle action; only render if the text actually overflows */}
                       {canLocationExpand && (
                         <div className="mt-0.5 md:mt-1">
                           <button
@@ -891,16 +1173,15 @@ function MenuContentLoaded(
                             aria-expanded={isLocationOpen}
                             aria-controls="full-location"
                           >
-                            {isLocationOpen ? "Hide" : "See more"}
+                            {isLocationOpen ? 'Hide' : 'See more'}
                           </button>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  {/* Creator + Contact */}
                   {mode === 'non-editable' && liveFull?.creator && (
-                    <div className="flex justify-between">
+                    <div className="flex justify-between mt-3">
                       <div className="flex items-center gap-3 text-zinc-300">
                         <div className="shrink-0">
                           <UserAvatar
@@ -909,81 +1190,42 @@ function MenuContentLoaded(
                             fallbackClassName="text-[7px]"
                             iterationCount={2}
                             variant="creator"
-                            borderVariant='animated'
-                            density='normal'
+                            borderVariant="animated"
+                            density="normal"
                           />
                         </div>
-                        <span className="flex items-baseline">
-                          By: <p className="font-display text-xs xs4:text-sm ml-1">{liveFull.creator.username}</p>
-                        </span>
+                        <span className="flex items-baseline">By: <p className="font-display text-xs xs4:text-sm ml-1">{liveFull.creator.username}</p></span>
                       </div>
 
                       {(live.contactEmail || live.contactPhone) && (
                         <div className="flex items-center gap-3">
                           {live.contactEmail && (
-                            <Link
-                              href={`mailto:${live.contactEmail}`}
-                              className="p-1 rounded-full bg-transparent border border-transparent hover:border-white transition duration-300 ease-in-out cursor-pointer"
-                              aria-label="Send an email"
-                              onMouseEnter={() => setIsMailHovered(true)}
-                              onMouseLeave={() => setIsMailHovered(false)}
-                            >
-                              <InToHoverIcon
-                                inIcon={MailAnimatedIcon}
-                                hoverIcon={MailAnimatedIconHover}
-                                size={28}
-                                resetTrigger={isOpen}
-                                isParentHovered={isMailHovered}
-                                isDesktop={isDesktop}
-                                className="cursor-pointer"
-                              />
+                            <Link href={`mailto:${live.contactEmail}`} className="p-1 rounded-full bg-transparent border border-transparent hover:border-white transition duration-300 ease-in-out cursor-pointer" aria-label="Send an email" onMouseEnter={() => setIsMailHovered(true)} onMouseLeave={() => setIsMailHovered(false)}>
+                              <InToHoverIcon inIcon={MailAnimatedIcon} hoverIcon={MailAnimatedIconHover} size={28} resetTrigger={isOpen} isParentHovered={isMailHovered} isDesktop={isDesktop} className="cursor-pointer" />
                             </Link>
                           )}
 
                           {live.contactPhone && (phoneApps === 'whatsapp' || phoneApps === 'both') && (
-                            <Link
-                              href={`https://wa.me/${phoneDigits}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-1 rounded-full bg-transparent border border-transparent hover:border-white transition duration-300 ease-in-out cursor-pointer"
-                              aria-label="Contact via WhatsApp"
-                              onMouseEnter={() => setIsWhatsappHovered(true)}
-                              onMouseLeave={() => setIsWhatsappHovered(false)}
-                            >
-                              <InToHoverIcon
-                                inIcon={WhatsappAnimatedIcon}
-                                hoverIcon={WhatsappAnimatedIconHover}
-                                size={28}
-                                resetTrigger={isOpen}
-                                isParentHovered={isWhatsappHovered}
-                                isDesktop={isDesktop}
-                                className="cursor-pointer"
-                              />
+                            <Link href={`https://wa.me/${phoneDigits}`} target="_blank" rel="noopener noreferrer" className="p-1 rounded-full bg-transparent border border-transparent hover:border-white transition duration-300 ease-in-out cursor-pointer" aria-label="Contact via WhatsApp" onMouseEnter={() => setIsWhatsappHovered(true)} onMouseLeave={() => setIsWhatsappHovered(false)}>
+                              <InToHoverIcon inIcon={WhatsappAnimatedIcon} hoverIcon={WhatsappAnimatedIconHover} size={28} resetTrigger={isOpen} isParentHovered={isWhatsappHovered} isDesktop={isDesktop} className="cursor-pointer" />
                             </Link>
                           )}
+
                           {live.contactPhone && (phoneApps === 'telegram' || phoneApps === 'both') && (
-                            <Link
-                              href={`https://t.me/+${phoneDigits}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-0.5 mt-[2px] rounded-full bg-transparent border border-transparent hover:border-white transition duration-300 ease-in-out cursor-pointer"
-                              aria-label="Contact via Telegram"
-                              onMouseEnter={() => setIsTelegramHovered(true)}
-                              onMouseLeave={() => setIsTelegramHovered(false)}
-                            >
-                              <InToHoverIcon
-                                inIcon={TelegramAnimatedIcon}
-                                hoverIcon={TelegramAnimatedIconHover}
-                                size={31}
-                                resetTrigger={isOpen}
-                                isParentHovered={isTelegramHovered}
-                                isDesktop={isDesktop}
-                                className="cursor-pointer"
-                              />
+                            <Link href={`https://t.me/+${phoneDigits}`} target="_blank" rel="noopener noreferrer" className="p-0.5 mt-[2px] rounded-full bg-transparent border border-transparent hover:border-white transition duration-300 ease-in-out cursor-pointer" aria-label="Contact via Telegram" onMouseEnter={() => setIsTelegramHovered(true)} onMouseLeave={() => setIsTelegramHovered(false)}>
+                              <InToHoverIcon inIcon={TelegramAnimatedIcon} hoverIcon={TelegramAnimatedIconHover} size={31} resetTrigger={isOpen} isParentHovered={isTelegramHovered} isDesktop={isDesktop} className="cursor-pointer" />
                             </Link>
                           )}
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* Ticket price (menu only) */}
+                  {live.isPaid && (
+                    <div className="mt-3 border-t border-zinc-800 pt-3 flex items-center justify-between text-sm text-zinc-200">
+                      <p className="font-semibold">Ticket</p>
+                      <p className="font-medium text-zinc-100">{formatPrice(live.priceCents ?? null, live.currency ?? undefined) || '—'}</p>
                     </div>
                   )}
                 </div>
@@ -1079,24 +1321,45 @@ function MenuContentLoaded(
                 {/* Left: RSVP switch */}
                 {mode === 'non-editable' && isUserLoaded && (
                   <div className="flex items-center space-x-3">
-                    <Switch
-                      id={`rsvp-toggle-${eventId}`}
-                      data-testid="rsvp-toggle"
-                      checked={isCurrentUserAttending}
-                      onCheckedChange={handleRsvpToggle}
-                      disabled={isPending || !isSignedIn}
-                      className="data-[state=checked]:bg-emerald-600 data-[state=unchecked]:bg-zinc-700 cursor-pointer"
-                    />
-                    <Label
-                      htmlFor={`rsvp-toggle-${eventId}`}
-                      className="text-white font-medium select-none cursor-pointer"
-                    >
-                      {isPending
-                        ? 'Updating...'
-                        : isCurrentUserAttending
-                        ? 'You are Attending'
-                        : 'Attend Event?'}
-                    </Label>
+                    {(() => {
+                      const isPaidCheckoutTarget =
+                        mode === 'non-editable' &&
+                        ('rsvps' in live) &&
+                        !isCurrentUserAttending &&
+                        Boolean((live as EventWithCreatorAndRsvps).isPaid);
+
+                      const showPreparing =
+                        isPreparingCheckout &&
+                        preparingCheckoutEventId === eventId &&
+                        isPaidCheckoutTarget;
+
+                      return (
+                        <>
+                          <Switch
+                            id={`rsvp-toggle-${eventId}`}
+                            data-testid="rsvp-toggle"
+                            checked={isCurrentUserAttending || showPreparing}
+                            onCheckedChange={handleRsvpToggle}
+                            disabled={isPending || showPreparing || !isSignedIn}
+                            className="data-[state=checked]:bg-emerald-600 data-[state=unchecked]:bg-zinc-700 cursor-pointer"
+                          />
+                          <Label
+                            htmlFor={`rsvp-toggle-${eventId}`}
+                            className="text-white font-medium select-none cursor-pointer"
+                          >
+                            {showPreparing
+                              ? 'Preparing checkout…'
+                              : isPending
+                              ? 'Updating...'
+                              : isCurrentUserAttending
+                              ? 'You are Attending'
+                              : isPaidCheckoutTarget
+                              ? 'Tap & Pay'
+                              : 'Attend Event?'}
+                          </Label>
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
 

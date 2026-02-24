@@ -6,7 +6,7 @@ import { UserButton, useUser } from '@clerk/nextjs';
 import { UserRole } from '@/generated/prisma';
 import ContactInfoPanel from './Contact/ContactInfoPanel';
 import Searchbar from './Searchbar/Searchbar';
-import AnimatedLogo from './AnimatedLogo';
+import AnimatedLogo from './AnimatedLogos/AnimatedLogo';
 import { Phone } from 'lucide-react';
 import { motion, type Variants } from 'motion/react';
 import { cn } from '@/lib/utils';

@@ -69,4 +69,6 @@ export type UpdatedEventMinimal = Pick<Event, 'id' | 'featured'> & {
 export type ToggleRsvpResult =
   | { success: true; action: "created"; message: string; newRsvp: RSVPWithUser; updatedEvent: UpdatedEventMinimal }
   | { success: true; action: "cancelled"; message: string; rsvpCancelled: true; userId: string; updatedEvent: UpdatedEventMinimal }
+  | { success: true; action: "payment_required"; message: string; eventId: string; isPaid: true }
+  | { success: true; action: "reactivated"; message: string; userId: string; updatedEvent: UpdatedEventMinimal }
   | { success: false; message: string };

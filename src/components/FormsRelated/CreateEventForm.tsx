@@ -1,6 +1,7 @@
 'use client'
 
-import { useTransition, useEffect, useMemo } from 'react'
+import { useTransition, useEffect, useMemo, useState } from 'react'
+import Image from 'next/image';
 import { useSWRConfig } from 'swr';
 import { revalidateEventLists } from '@/lib/mutateHelpers';
 import { motion, type Variants } from 'motion/react'
@@ -11,7 +12,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { createEventSchema, type CreateEventValues } from '@/schemas/events'
 import { toast } from 'sonner'
 
-import { capitalizeFirstLetter, canonicalizeTimeZone, pickerDateToUtc } from '@/lib/utils'
+import { cn, capitalizeFirstLetter, canonicalizeTimeZone, pickerDateToUtc } from '@/lib/utils'
 import { useViewerTz } from '@/contexts/ViewerTzContext'
 import { applyZodErrorsToForm, toFormError } from '@/lib/formErrors'
 import { Input } from '@/components/ui/input'
@@ -19,6 +20,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
+import { CurrencySelect, type Currency } from '@/components/ui/currency-select'
 import { PhoneInput } from '@/components/ui/phone-input'
 import { isValidPhoneNumber } from 'react-phone-number-input';
 import { DateTimePicker } from '@/components/ui/datetime-picker'
@@ -33,6 +36,7 @@ import { useUser } from '@clerk/nextjs'
 import { AuroraButton } from '@/components/CommonButtons/AuroraButton'
 import { format, isToday, addHours, startOfDay, addYears, set, add } from 'date-fns'
 import { enUS } from 'date-fns/locale'
+import { NumericFormat } from "react-number-format";
 
 /* =======================
    Animations
@@ -62,6 +66,7 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
   const { user: clerkUser } = useUser()
   const { viewerTz } = useViewerTz()
   const { mutate } = useSWRConfig()
+  const [selectedCurrency, setSelectedCurrency] = useState<Currency | null>(null);
   const isE2E = process.env.NEXT_PUBLIC_E2E === '1';
 
 
@@ -107,6 +112,9 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
       contactPhone: profilePhoneNumber ?? '',
       contactPhoneApps: undefined,
       useProfilePhone: !!profilePhoneNumber,
+      isPaid: false,
+      priceAmount: '',
+      currency: '',
     },
   })
 
@@ -116,10 +124,22 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
   })
 
   // RHF watchers for UI
-  const [titleValue, descriptionValue, locationValue, useProfilePhoneValue] = useWatch({
-     control: form.control,
-     name: ['title', 'description', 'location', 'useProfilePhone'],
-   })
+  const [
+    titleValue,
+    descriptionValue,
+    locationValue,
+    useProfilePhoneValue,
+    isPaidValue,
+    currencyValue,
+  ] = useWatch({
+    control: form.control,
+    name: ['title', 'description', 'location', 'useProfilePhone', 'isPaid', 'currency'],
+  })
+  
+  const currencyCode = (currencyValue ?? '').toUpperCase()
+  const isZeroDecimal = currencyCode === 'JPY' || currencyCode === 'CLP'
+  const exponent = isZeroDecimal ? 0 : 2
+
   // The PhoneInput leaves an empty string ("") when there is no valid number
   const phoneE164 = useWatch({ control: form.control, name: 'contactPhone' }) ?? ''
   // Country-based validation using react-phone-number-input/libphonenumber
@@ -182,6 +202,18 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
           const normalizedPhone = contactPhone?.trim() || null
           const normalizedPhoneApps = normalizedPhone ? contactPhoneApps : undefined
 
+          const isPaid = values.isPaid === true
+          const raw = (values.priceAmount ?? '').trim()
+          const amount = raw ? Number(raw) : NaN
+
+          const priceCents =
+            isPaid && Number.isFinite(amount) && amount > 0
+              ? (exponent === 0 ? Math.round(amount) : Math.round(amount * 100))
+              : null
+          const currency = isPaid && values.currency?.trim()
+            ? (values.currency.trim().toUpperCase())
+            : null
+
           const payload: EventFormSerialized = {
             title,
             description,
@@ -192,6 +224,9 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
             contactEmail: normalizedEmail,
             contactPhone: normalizedPhone,
             contactPhoneApps: normalizedPhoneApps,
+            isPaid: isPaid || undefined,
+            priceCents: priceCents ?? null,
+            currency: currency ?? null,
           }
 
           const result = (await createEvent(payload)) as CreateEventResult
@@ -302,6 +337,28 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
               />
             </AnimatedFormSection>
 
+                        
+            {/* Time Zone */}
+            <AnimatedFormSection>
+              <FormField
+                control={form.control}
+                name="tzMode"
+                render={({ field }) => (
+                  <FormItem>
+                    <TimeZoneSelector
+                      tzMode={field.value as 'auto' | 'manual'}
+                      onTzModeChange={field.onChange}
+                      eventTimeZone={eventTimeZoneValue}
+                      onEventTimeZoneChange={(tz) => form.setValue('eventTimeZone', tz, { shouldDirty: true, shouldValidate: true })}
+                      viewerTz={viewerTz}
+                      eventTzError={form.formState.errors.eventTimeZone?.message as string | undefined}
+                    />
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </AnimatedFormSection>
+
             {/* Date & Time */}
             <AnimatedFormSection>
               <FormField
@@ -330,26 +387,136 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
               />
             </AnimatedFormSection>
 
-            {/* Time Zone */}
+
+            {/* Paid event */}
             <AnimatedFormSection>
               <FormField
                 control={form.control}
-                name="tzMode"
+                name="isPaid"
                 render={({ field }) => (
-                  <FormItem>
-                    <TimeZoneSelector
-                      tzMode={field.value as 'auto' | 'manual'}
-                      onTzModeChange={field.onChange}
-                      eventTimeZone={eventTimeZoneValue}
-                      onEventTimeZoneChange={(tz) => form.setValue('eventTimeZone', tz, { shouldDirty: true, shouldValidate: true })}
-                      viewerTz={viewerTz}
-                      eventTzError={form.formState.errors.eventTimeZone?.message as string | undefined}
-                    />
-                    <FormMessage />
+                  <FormItem className="flex flex-row items-center justify-between rounded-md border p-3 xs3:p-4 shadow bg-black border-zinc-700">
+                    <div className="space-y-1.5">
+                      <FormLabel className="text-white font-heading">Paid event</FormLabel>
+                      <p className=" text-2xs md:text-xs text-zinc-400">Users pay a ticket to attend</p>
+                    </div>
+                    {/* Right side: Powered by Stripe + Switch */}
+                    <div className="flex items-center gap-8 xs3:gap-3">
+                      {/* Brand block */}
+                        <div
+                        className={cn(
+                          "flex items-center whitespace-nowrap select-none transition-all duration-300 ease-in-out",
+                          field.value ? "opacity-100 md:scale-110 md:mr-1" : "opacity-60 md:scale-100 md:mr-0"
+                        )}
+                      >
+                        <span className="text-[10px] font-medium tracking-wide text-zinc-500 select-none">
+                          Powered by
+                        </span>
+
+                        <div className="flex items-center gap-0.5 md:gap-0">
+                          <Image
+                            src="/stripe-logo-white.svg"
+                            alt="Stripe"
+                            width={96}
+                            height={32}
+                            className="h-6 w-auto"
+                          />
+                          <Image
+                            src="/stripe-logo.jpeg"
+                            alt="Stripe"
+                            width={24}
+                            height={24}
+                            className="h-5 w-5 object-contain"
+                          />
+                        </div>
+                      </div>
+
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                          className="data-[state=unchecked]:bg-zinc-900 data-[state=checked]:bg-emerald-600 cursor-pointer"
+                        />
+                      </FormControl>
+                    </div>
                   </FormItem>
                 )}
               />
             </AnimatedFormSection>
+
+            {/* Price & currency (when paid) */}
+            <CollapseMotion show={!!isPaidValue} variant="blur-in">
+            <div className="space-y-2">
+              <FormLabel className={cn(
+                (form.formState.errors.currency || form.formState.errors.priceAmount) && "text-destructive",
+                "text-white font-heading"
+              )}>
+                Ticket Price
+              </FormLabel>
+
+              <div className="flex items-center gap-2">
+                <FormField
+                  control={form.control}
+                  name="currency"
+                  render={({ field, fieldState }) => (
+                    <FormControl>
+                      <CurrencySelect
+                        {...field}
+                        onValueChange={field.onChange}
+                        onCurrencySelect={setSelectedCurrency}
+                        placeholder="USD"
+                        currencies="all"
+                        variant="small"
+                        valid={!fieldState.invalid}
+                      />
+                    </FormControl>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="priceAmount"
+                  render={({ field, fieldState }) => (
+                    <div className="relative w-full">
+                      <FormControl>
+                        <NumericFormat
+                          customInput={Input}
+                          value={field.value ?? ""}
+                          // IMPORTANT: guardamos el valor "raw" (sin miles). Ej: "10000" o "10000.5"
+                          onValueChange={(values) => field.onChange(values.value || "")}
+                          valueIsNumericString
+                          thousandSeparator="."
+                          decimalSeparator=","
+                          allowedDecimalSeparators={[".", ","]}
+                          decimalScale={exponent}
+                          fixedDecimalScale={false}
+                          allowNegative={false}
+                          placeholder="0"
+                          className={cn(
+                            "pr-10 bg-black text-white border-zinc-700 placeholder:text-zinc-400",
+                            "focus-visible:ring-emerald-500 focus-visible:border-emerald-500",
+                            fieldState.invalid && "border-red-500"
+                          )}
+                        />
+                      </FormControl>
+
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-zinc-300">
+                        {selectedCurrency?.symbol}
+                      </span>
+                    </div>
+                  )}
+                />
+              </div>
+
+              {(form.formState.errors.currency || form.formState.errors.priceAmount) && (
+                <div className="text-[0.8rem] font-medium text-destructive">
+                  {form.formState.errors.currency?.message && <p>{form.formState.errors.currency.message}</p>}
+                  {form.formState.errors.priceAmount?.message && <p>{form.formState.errors.priceAmount.message}</p>}
+                </div>
+              )}
+            </div>
+            </CollapseMotion>
+
+
 
             {/* Category */}
             <AnimatedFormSection>

@@ -28,6 +28,7 @@ import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import AdminFeaturedBadge from '../Badges/AdminFeaturedBadge';
 import AuroraFeaturedBadge from '../Badges/AuroraFeaturedBadge';
+import PricingBadge from '../Badges/PricingBadge';
 import AvatarStack from '../AvatarStack';
 import UserAvatar from '../UserAvatar';
 
@@ -792,6 +793,11 @@ function ArcEventCard({
                   </Badge>
                 )}
               </motion.div>
+
+                {/* Top-right badges stack: category (left) is separate; pricing sits on right stacked under category-level overlay */}
+                <div className="absolute z-20 right-1.5 -top-3.5 md:-top-3 flex flex-col items-end gap-1">
+                  <PricingBadge isPaid={Boolean(event.isPaid)} variant={isList ? 'list' : 'carousel'} className="max-w-[6.5rem]" />
+                </div>
 
               {/* Featured/Admin badges */}
               {badgeState !== 'none' && (

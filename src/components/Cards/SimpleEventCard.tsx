@@ -17,6 +17,7 @@ import { Label } from '../ui/label';
 import { Badge } from '@/components/ui/badge';
 import AdminFeaturedBadge from '../Badges/AdminFeaturedBadge';
 import AuroraFeaturedBadge from '../Badges/AuroraFeaturedBadge';
+import PricingBadge from '../Badges/PricingBadge';
 import AnimatedCounter from '../AnimatedText/AnimatedCounter';
 import {
   getBadgeState,
@@ -375,6 +376,11 @@ export default function SimpleEventCard({
               {capitalizeFirstLetter(event.category)}
             </Badge>
           </motion.div>
+
+          {/* Right-side badges stack (stacked under category-level area) */}
+          <div className="absolute z-20 right-1.5 -top-4 md:-top-3 flex flex-col items-end gap-1">
+            <PricingBadge isPaid={Boolean(event.isPaid)} variant={isDesktop ? 'list' : 'carousel'} className="max-w-[6.5rem]" />
+          </div>
 
           {/* ---------- Featured / Admin badges --------------------------- */}
           {badgeState !== 'none' && (

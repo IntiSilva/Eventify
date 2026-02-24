@@ -1,14 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
   output   = "../src/generated/prisma"
@@ -84,6 +73,7 @@ model User {
   phoneNumber String? @unique @db.VarChar(30)
 
   rsvps     RSVP[]
+  payments  Payment[]
   createdAt DateTime @default(now())
 
   createdEvents Event[] @relation("UserCreatedEvents")
@@ -115,8 +105,12 @@ model Event {
   contactEmail  String?
   contactPhone  String?
   contactPhoneApps ContactPhoneApps?
+  isPaid      Boolean @default(false)
+  priceCents  Int?
+  currency    String? @db.VarChar(3)
 
   rsvps       RSVP[]
+  payments    Payment[]
   createdAt   DateTime @default(now())
 
 
@@ -143,6 +137,33 @@ model RSVP {
   reminderScheduledAt    DateTime?
   reminderSentAt         DateTime?
   // -----------------------------------------
+  payments Payment[]
 
   @@unique([userId, eventId])
+}
+
+enum PaymentStatus {
+  pending
+  succeeded
+  failed
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  stripePaymentIntentId String        @unique
+  status                PaymentStatus @default(pending)
+  amountCents           Int
+  currency              String        @db.VarChar(3)
+  eventId               String
+  userId                String
+  rsvpId                String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [clerkId], onDelete: Cascade)
+  rsvp  RSVP? @relation(fields: [rsvpId], references: [id], onDelete: SetNull)
+
+  @@index([eventId])
+  @@index([userId])
 }
