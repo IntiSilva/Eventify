@@ -2,6 +2,9 @@ import '@testing-library/jest-dom/vitest';
 import { beforeAll, afterEach, afterAll, vi } from 'vitest';
 import { server } from './msw/server';
 
+// Next.js marker module: harmless no-op in Vitest/JSDOM.
+vi.mock('server-only', () => ({}));
+
 // MSW: interceptar /api/*
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => server.resetHandlers());

@@ -64,6 +64,7 @@ describe('rsvp/actions.toggleRSVP', () => {
     h.prisma.rSVP.create.mockReset()
     h.prisma.rSVP.delete.mockReset()
     h.prisma.rSVP.count.mockReset()
+    h.prisma.event.findUnique.mockReset()
     h.prisma.event.update.mockReset()
     h.authUserId = 'user_123'
   })
@@ -114,6 +115,7 @@ describe('rsvp/actions.toggleRSVP', () => {
     const USER_ID = h.authUserId
 
     h.prisma.rSVP.findUnique.mockResolvedValueOnce(null)
+    h.prisma.event.findUnique.mockResolvedValueOnce({ isPaid: false })
     h.prisma.rSVP.create.mockResolvedValueOnce(makeRsvp('r_new', EVENT_ID, USER_ID))
     h.prisma.rSVP.count.mockResolvedValueOnce(5)
     h.prisma.event.update.mockResolvedValueOnce({

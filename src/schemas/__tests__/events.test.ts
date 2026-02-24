@@ -25,6 +25,7 @@ describe('createEventSchema (unit)', () => {
     tzMode: 'auto' as const,                              // required by schema
     eventTimeZone: 'America/Argentina/Buenos_Aires',      // IANA canonical
     useProfilePhone: false,                               // required by schema
+    isPaid: false,                                        // required by schema
     contactEmail: 'organizer@example.com',                // email-only baseline
     contactPhone: undefined as string | undefined,        // no uses null here
     contactPhoneApps: undefined as ContactPhoneApps | undefined,
