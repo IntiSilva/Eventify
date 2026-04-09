@@ -3,7 +3,30 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import type Stripe from 'stripe';
 import { stripe, getStripeWebhookSecret } from '@/lib/stripe';
-import { confirmPaidRsvpByIntent, markPaymentFailed, markPaymentProcessing, markPaymentCanceled } from '@/lib/payments/confirmPaidRsvp';
+import {
+  confirmPaidRsvpByIntent,
+  markPaymentFailed,
+  markPaymentProcessing,
+  markPaymentCanceled,
+} from '@/lib/payments/confirmPaidRsvp';
+import { syncRefundRequestFromStripeRefund } from '@/lib/payments/refunds';
+
+function logStripeDisputeEvent(eventType: Stripe.Event['type'], dispute: Stripe.Dispute) {
+  const chargeId =
+    typeof dispute.charge === 'string'
+      ? dispute.charge
+      : dispute.charge?.id ?? 'unknown';
+  const paymentIntentId =
+    typeof dispute.payment_intent === 'string'
+      ? dispute.payment_intent
+      : dispute.payment_intent?.id ?? 'unknown';
+  const logMethod =
+    eventType === 'charge.dispute.closed' ? console.info : console.warn;
+
+  logMethod(
+    `[stripe-dispute] ${eventType} disputeId=${dispute.id} chargeId=${chargeId} paymentIntentId=${paymentIntentId} status=${dispute.status ?? 'unknown'} reason=${dispute.reason ?? 'unknown'}`
+  );
+}
 
 export async function POST(req: Request) {
   const signature = req.headers.get('stripe-signature');
@@ -24,7 +47,7 @@ export async function POST(req: Request) {
   try {
     if (event.type === 'payment_intent.succeeded') {
       const intent = event.data.object as Stripe.PaymentIntent;
-      await confirmPaidRsvpByIntent(intent.id);
+      await confirmPaidRsvpByIntent(intent.id, intent);
     }
 
     // Informational state: processing
@@ -34,9 +57,28 @@ export async function POST(req: Request) {
     }
 
     // Final failure/cancel
-    if (event.type === 'payment_intent.canceled' || event.type === 'payment_intent.payment_failed') {
+    if (event.type === 'payment_intent.canceled') {
       const intent = event.data.object as Stripe.PaymentIntent;
       await markPaymentCanceled(intent.id);
+    }
+
+    if (event.type === 'payment_intent.payment_failed') {
+      const intent = event.data.object as Stripe.PaymentIntent;
+      await markPaymentFailed(intent.id);
+    }
+
+    if (event.type === 'refund.updated') {
+      const refund = event.data.object as Stripe.Refund;
+      await syncRefundRequestFromStripeRefund(refund);
+    }
+
+    if (
+      event.type === 'charge.dispute.created' ||
+      event.type === 'charge.dispute.updated' ||
+      event.type === 'charge.dispute.closed'
+    ) {
+      const dispute = event.data.object as Stripe.Dispute;
+      logStripeDisputeEvent(event.type, dispute);
     }
 
     return NextResponse.json({ success: true });

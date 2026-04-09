@@ -29,6 +29,14 @@ const parseYYYYMMDDAsLocal = (s?: string | null) => {
   return new Date(y, m - 1, d, 0, 1, 0, 0);
 };
 
+export type EventPaidFilter = 'all' | 'paid' | 'free';
+
+const normalizePaidFilter = (value?: string | null): EventPaidFilter => {
+  if (value === 'paid') return 'paid';
+  if (value === 'free') return 'free';
+  return 'all';
+};
+
 
   /* -----------------------------
    * Animation variants
@@ -133,6 +141,7 @@ export interface SearchbarFilters {
   location?: string;
   creator?: string;
   date?: string;
+  paid?: EventPaidFilter;
 }
 
 // Server-side suggestions context
@@ -206,6 +215,9 @@ export default function Searchbar({
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(
     searchParams.has('date') ? parseYYYYMMDDAsLocal(searchParams.get('date')) : undefined
   );
+  const [paidFilter, setPaidFilter] = useState<EventPaidFilter>(() =>
+    normalizePaidFilter(searchParams.get('paid'))
+  );
 
   // Keep category locally to detect/close correctly
   const [categoryLocal, setCategoryLocal] = useState<EventCategory | ''>(
@@ -214,12 +226,14 @@ export default function Searchbar({
 
   // 1) Derived from the URL
   const hasSearchParams = useMemo(() => {
+    const paidParam = normalizePaidFilter(searchParams.get('paid'));
     return (
       searchParams.has('search') ||
       searchParams.has('category') ||
       searchParams.has('location') ||
       searchParams.has('creator') ||
-      searchParams.has('date')
+      searchParams.has('date') ||
+      paidParam !== 'all'
     );
   }, [searchParams]);
 
@@ -256,6 +270,9 @@ export default function Searchbar({
       const requestedCategory =
         'category' in newFilters ? (newFilters.category || undefined) : undefined;
       const currentCategory = requestedCategory ?? localSelectedCategory;
+      const requestedPaid =
+        'paid' in newFilters ? normalizePaidFilter(newFilters.paid) : undefined;
+      const currentPaid = requestedPaid ?? paidFilter;
 
       const filters: SearchbarFilters = {
         search: inputValue.trim() || undefined,
@@ -263,11 +280,12 @@ export default function Searchbar({
         location: location.trim() || undefined,
         creator: creator.trim() || undefined,
         date: selectedDate ? toLocalYYYYMMDD(selectedDate) : undefined,
+        paid: currentPaid,
         ...newFilters,
       };
       onSearchSubmit?.(filters);
     },
-    [inputValue, location, creator, selectedDate, categoryLocal, onSearchSubmit]
+    [inputValue, location, creator, selectedDate, categoryLocal, paidFilter, onSearchSubmit]
   );
 
   const handleToggleSearchUI = () => {
@@ -285,6 +303,7 @@ export default function Searchbar({
         ? parseYYYYMMDDAsLocal(searchParams.get('date'))
         : undefined;
       const urlCategory = (searchParams.get('category') as EventCategory) || '';
+      const urlPaid = normalizePaidFilter(searchParams.get('paid'));
 
       // Estas llamadas se “batchean” automáticamente en handlers de eventos
       setInputValue(urlSearch);
@@ -292,6 +311,7 @@ export default function Searchbar({
       setCreator(urlCreator);
       setSelectedDate(urlDate);
       setCategoryLocal(urlCategory);
+      setPaidFilter(urlPaid);
       return; // evitá ejecutar el branch de cierre
     }
 
@@ -303,7 +323,8 @@ export default function Searchbar({
       location.trim().length > 0 ||
       creator.trim().length > 0 ||
       !!selectedDate ||
-      !!categoryLocal;
+      !!categoryLocal ||
+      paidFilter !== 'all';
 
     const hadURL = hasSearchParams;
 
@@ -312,6 +333,7 @@ export default function Searchbar({
     setCreator('');
     setSelectedDate(undefined);
     setCategoryLocal('');
+    setPaidFilter('all');
     setIsFilterPanelOpen(false);
 
     if (hadLocal || hadURL) {
@@ -320,10 +342,11 @@ export default function Searchbar({
   };
 
   const handleAdvancedFilterApply = useCallback(
-    (advanced: { location: string; creator: string; date?: Date }) => {
+    (advanced: { location: string; creator: string; date?: Date; paid: EventPaidFilter }) => {
       setLocation(advanced.location);
       setCreator(advanced.creator);
       setSelectedDate(advanced.date);
+      setPaidFilter(advanced.paid);
 
       // microtask to execute search after states are flushed
       const run = () =>
@@ -331,6 +354,7 @@ export default function Searchbar({
           location: advanced.location.trim() || undefined,
           creator: advanced.creator.trim() || undefined,
           date: advanced.date ? toLocalYYYYMMDD(advanced.date) : undefined,
+          paid: advanced.paid,
         });
       if (typeof queueMicrotask === 'function') queueMicrotask(run);
       else Promise.resolve().then(run);
@@ -488,7 +512,7 @@ export default function Searchbar({
         isNarrowScreen={isNarrowScreen}
         isScrolled={isScrolled}
         isVisible={isSearchUIVisible}
-        initialFilters={{ location, creator, date: selectedDate }}
+        initialFilters={{ location, creator, date: selectedDate, paid: paidFilter }}
         onApplyFilters={handleAdvancedFilterApply}
         disableCreatorFilter={disableCreatorFilter}
         isPanelOpen={isFilterPanelOpen}

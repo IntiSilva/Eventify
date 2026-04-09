@@ -40,7 +40,7 @@ export default async function AgendaPage() {
 
   return (
     <DashboardPageWrapper>
-      <div className="container mx-auto px-4 pt-6 lg:pt-6 space-y-6">
+      <div className="container mx-auto px-3 xs4:px-4 pt-6 lg:pt-6 space-y-6">
         <AgendaPageClientWrapper initialEvents={events} swrKey={swrKey} />
       </div>
     </DashboardPageWrapper>

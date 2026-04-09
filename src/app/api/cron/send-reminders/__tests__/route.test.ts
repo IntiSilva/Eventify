@@ -157,6 +157,13 @@ describe('/api/cron/send-reminders (mini)', () => {
       expect(typeof body.message).toBe('string');
     }
 
+    const findManyArg = h.findManyMock.mock.calls[0]?.[0];
+    expect(findManyArg?.where).toMatchObject({
+      status: 'confirmed',
+      attendanceEntitlementStatus: 'active',
+      reminderSentAt: null,
+    });
+
     // Ensure we updated reminderSentAt exactly once
     expect(h.updateMock).toHaveBeenCalledTimes(1);
     const updateArg = h.updateMock.mock.calls[0][0];

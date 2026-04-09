@@ -8,9 +8,16 @@ import { EventCategory } from '@/generated/prisma'
  */
 const h = vi.hoisted(() => ({
   createdArgs: [] as Array<{ data: Record<string, unknown> }>,
+  priceVersionArgs: [] as Array<{ data: Record<string, unknown> }>,
+  eventUpdateArgs: [] as Array<{ data: Record<string, unknown>; where: Record<string, unknown> }>,
+  connectReady: undefined as boolean | undefined,
   userRow: {
     clerkId: 'user_123',
     role: 'organizer',
+    stripeConnectAccountId: null as string | null,
+    stripeConnectPayoutsEnabled: false,
+    stripeConnectChargesEnabled: false,
+    stripeConnectDetailsSubmitted: false,
     username: 'organizer',
     firstName: 'Org',
     lastName: 'User',
@@ -33,21 +40,42 @@ vi.mock('@/lib/prisma', () => {
       // We still return something plausible for completeness.
       return { id: 'evt_new', ...args.data }
     }),
-    update: vi.fn(),
+    update: vi.fn(async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+      h.eventUpdateArgs.push(args)
+      return { id: 'evt_new', ...args.data }
+    }),
     findUnique: vi.fn(),
     findMany: vi.fn(),
     count: vi.fn(),
   }
+  const eventPriceVersion = {
+    create: vi.fn(async (args: { data: Record<string, unknown> }) => {
+      h.priceVersionArgs.push(args)
+      return { id: 'pv_1', ...args.data }
+    }),
+  }
   const user = {
     findUnique: vi.fn(async () => h.userRow),
   }
-  return { prisma: { event, user } }
+  const prisma = {
+    event,
+    eventPriceVersion,
+    user,
+    $transaction: vi.fn(async (cb: (tx: { event: typeof event; eventPriceVersion: typeof eventPriceVersion }) => Promise<unknown>) =>
+      cb({ event, eventPriceVersion })),
+  }
+  return { prisma }
 })
 
 // next/cache revalidation hooks
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
+
+vi.mock('@/lib/payments/stripeConnectReadiness', async () => {
+  const { buildConnectConfigMock } = await import('@/test-utils/mockConnectConfig')
+  return buildConnectConfigMock(h)
+})
 
 // Clerk auth: always authenticated as organizer
 vi.mock('@clerk/nextjs/server', () => ({
@@ -137,6 +165,14 @@ const importActions = () => import('@/app/(dashboard)/events/actions')
 
 beforeEach(() => {
   h.createdArgs.length = 0
+  h.priceVersionArgs.length = 0
+  h.eventUpdateArgs.length = 0
+  h.connectReady = undefined
+  h.userRow.role = 'organizer'
+  h.userRow.stripeConnectAccountId = null
+  h.userRow.stripeConnectPayoutsEnabled = false
+  h.userRow.stripeConnectChargesEnabled = false
+  h.userRow.stripeConnectDetailsSubmitted = false
   vi.useFakeTimers()
 })
 
@@ -213,6 +249,21 @@ describe('events/actions.createEvent (integration-ish)', () => {
     // Contact fields mirror input (nullable ok)
     expect(data['contactEmail']).toBe('user@example.com')
     expect(data['contactPhone']).toBeNull()
+
+    // Initial pricing version is created and linked (full pricing versioning MVP)
+    expect(h.priceVersionArgs).toHaveLength(1)
+    expect(h.priceVersionArgs[0]?.data).toMatchObject({
+      eventId: 'evt_new',
+      versionNumber: 1,
+      isPaid: false,
+      amountCents: null,
+      currency: null,
+      createdBy: 'user_123',
+    })
+    expect(h.eventUpdateArgs).toHaveLength(1)
+    expect(h.eventUpdateArgs[0]?.data).toMatchObject({
+      currentPriceVersionId: 'pv_1',
+    })
   })
 
   it('rejects a same-day event scheduled under ~4h window (does not hit DB)', async () => {
@@ -247,5 +298,167 @@ describe('events/actions.createEvent (integration-ish)', () => {
       const serialized = JSON.stringify(result.errors)
       expect(serialized.toLowerCase()).toContain('date')
     }
+    expect(result.message).toBe('Validation failed. Please check the form fields.')
+    expect(result.message).not.toContain('Database error')
+  })
+
+  it('rejects midnight crossover events that are <4h away in absolute time', async () => {
+    // 2025-11-03 23:30 in America/Argentina/Buenos_Aires
+    vi.setSystemTime(new Date('2025-11-04T02:30:00.000Z'))
+
+    const { createEvent } = await importActions()
+
+    // 2025-11-04 00:30 in America/Argentina/Buenos_Aires (only +60 min away)
+    const payload = {
+      title: 'Midnight Crossover Too Soon',
+      description: 'Should be rejected by absolute lead-time policy',
+      date: '2025-11-04T03:30:00.000Z',
+      eventTimeZone: 'America/Argentina/Buenos_Aires',
+      location: 'Test',
+      category: EventCategory.music,
+      contactEmail: 'user@example.com',
+      contactPhone: null,
+      contactPhoneApps: undefined,
+    }
+
+    const result = await createEvent(payload)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('Validation failed. Please check the form fields.')
+    expect(h.createdArgs).toHaveLength(0)
+    const serialized = JSON.stringify(result.errors)
+    expect(serialized.toLowerCase()).toContain('date')
+    expect(serialized.toLowerCase()).toContain('at least 4 hours')
+  })
+
+  it('rejects events at 239 minutes lead time and accepts exactly 240 minutes', async () => {
+    vi.setSystemTime(new Date('2025-11-03T12:00:00.000Z'))
+    const { createEvent } = await importActions()
+
+    const basePayload = {
+      title: 'Boundary check',
+      description: 'lead-time boundary test',
+      eventTimeZone: 'UTC',
+      location: 'Boundary Hall',
+      category: EventCategory.music,
+      contactEmail: 'user@example.com',
+      contactPhone: null,
+      contactPhoneApps: undefined,
+    } as const
+
+    const tooSoon = await createEvent({
+      ...basePayload,
+      date: '2025-11-03T15:59:00.000Z', // +239 min
+    })
+    expect(tooSoon.success).toBe(false)
+    expect(tooSoon.message).toBe('Validation failed. Please check the form fields.')
+    expect(h.createdArgs).toHaveLength(0)
+
+    const exactlyFourHours = await createEvent({
+      ...basePayload,
+      date: '2025-11-03T16:00:00.000Z', // +240 min
+    })
+    expect(exactlyFourHours.success).toBe(true)
+    expect(h.createdArgs).toHaveLength(1)
+  })
+
+  it('blocks paid event creation for organizers unless Stripe Connect is fully enabled', async () => {
+    vi.setSystemTime(new Date('2099-10-01T12:00:00.000Z'))
+    h.userRow.role = 'organizer'
+    h.userRow.stripeConnectAccountId = 'acct_test_incomplete'
+    h.userRow.stripeConnectPayoutsEnabled = false
+    h.userRow.stripeConnectChargesEnabled = true
+    h.userRow.stripeConnectDetailsSubmitted = true
+
+    const { createEvent } = await importActions()
+
+    const payload = {
+      title: 'Paid Event',
+      description: 'Paid event should be blocked without Stripe Connect payouts',
+      date: '2099-10-10T10:00:00.000Z',
+      location: 'Test venue',
+      category: EventCategory.music,
+      contactEmail: 'user@example.com',
+      contactPhone: null,
+      contactPhoneApps: undefined,
+      eventTimeZone: 'UTC',
+      isPaid: true,
+      priceCents: 5500,
+      currency: 'USD',
+    }
+
+    const result = await createEvent(payload)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('Paid events require an organizer')
+    expect(h.createdArgs).toHaveLength(0)
+    expect(h.priceVersionArgs).toHaveLength(0)
+    expect(h.eventUpdateArgs).toHaveLength(0)
+  })
+
+  it('allows paid event creation for admins using platform payout mode', async () => {
+    vi.setSystemTime(new Date('2099-10-01T12:00:00.000Z'))
+    h.userRow.role = 'admin'
+    h.userRow.stripeConnectAccountId = 'acct_admin'
+    h.userRow.stripeConnectPayoutsEnabled = true
+    h.userRow.stripeConnectChargesEnabled = true
+    h.userRow.stripeConnectDetailsSubmitted = true
+
+    const { createEvent } = await importActions()
+
+    const payload = {
+      title: 'Admin Paid Event',
+      description: 'Admins cannot create paid events because they are not organizer-owned',
+      date: '2099-10-10T10:00:00.000Z',
+      location: 'Admin venue',
+      category: EventCategory.music,
+      contactEmail: 'user@example.com',
+      contactPhone: null,
+      contactPhoneApps: undefined,
+      eventTimeZone: 'UTC',
+      isPaid: true,
+      priceCents: 5500,
+      currency: 'USD',
+    }
+
+    const result = await createEvent(payload)
+
+    expect(result.success).toBe(true)
+    expect(h.createdArgs).toHaveLength(1)
+    expect(h.priceVersionArgs).toHaveLength(1)
+    expect(h.eventUpdateArgs).toHaveLength(1)
+  })
+
+  it('allows paid event creation for organizers when Stripe Connect is fully enabled', async () => {
+    vi.setSystemTime(new Date('2099-10-01T12:00:00.000Z'))
+    h.userRow.role = 'organizer'
+    h.userRow.stripeConnectAccountId = 'acct_ready'
+    h.userRow.stripeConnectPayoutsEnabled = true
+    h.userRow.stripeConnectChargesEnabled = true
+    h.userRow.stripeConnectDetailsSubmitted = true
+
+    const { createEvent } = await importActions()
+
+    const payload = {
+      title: 'Paid Event Ready',
+      description: 'Paid event should pass with fully enabled Stripe Connect',
+      date: '2099-10-10T10:00:00.000Z',
+      location: 'Ready venue',
+      category: EventCategory.music,
+      contactEmail: 'user@example.com',
+      contactPhone: null,
+      contactPhoneApps: undefined,
+      eventTimeZone: 'UTC',
+      isPaid: true,
+      priceCents: 5500,
+      currency: 'USD',
+    }
+
+    const result = await createEvent(payload)
+
+    expect(result.success).toBe(true)
+    expect(h.createdArgs).toHaveLength(1)
+    expect(h.priceVersionArgs).toHaveLength(1)
+    expect(h.eventUpdateArgs).toHaveLength(1)
   })
 })

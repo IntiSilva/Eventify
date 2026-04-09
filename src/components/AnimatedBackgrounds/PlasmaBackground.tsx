@@ -190,7 +190,14 @@ const PlasmaBackground: React.FC<PlasmaBackgroundProps> = ({
   const isMobile = useMediaQueryOgl('(max-width: 767px)');
   const [ready, setReady] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [hasMounted, setHasMounted] = useState(false);
   const useStaticImage = forceStaticImage || isMobile || prefersReducedMotion;
+
+  useEffect(() => {
+    const run = () => setHasMounted(true);
+    if (typeof queueMicrotask === 'function') queueMicrotask(run);
+    else Promise.resolve().then(run);
+  }, []);
 
   // Reactive refs for loop/listeners (avoid re-bootstrap)
   const directionRef = useRef<Direction>('forward');
@@ -452,7 +459,7 @@ const PlasmaBackground: React.FC<PlasmaBackgroundProps> = ({
       }}
       aria-hidden
     >
-      {useStaticImage && (
+      {hasMounted && useStaticImage && (
         <Image
           src={staticImageSrc}
           alt=""

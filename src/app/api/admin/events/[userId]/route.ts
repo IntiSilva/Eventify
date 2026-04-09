@@ -36,11 +36,13 @@ export async function GET(
     const url = new URL(request.url);
     const filters = Object.fromEntries(url.searchParams.entries());
 
-    const result = await getEventsByOrganizer(userId, filters);
+    //Strip out context from the response, as the value "hasAnyEventsEver" it's not needed in the panel for each organizer inside the admin page
+    const { data, metadata } = await getEventsByOrganizer(userId, filters);
 
     const payload = {
       success: true,
-      ...result, // { data, metadata }
+      data,
+      metadata,
     } satisfies AdminEventsResponse;
 
     return NextResponse.json(payload);

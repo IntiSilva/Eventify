@@ -4,7 +4,9 @@ import { isValidPhoneNumber } from "react-phone-number-input/min";
 import { EventCategory, ContactPhoneApps } from "@/generated/prisma";
 
 /**
- * Shared event schemas (source of truth) for Create/Edit flows.
+ * UI form schemas for Create/Edit flows (RHF + client-side UX validation).
+ * Server actions remain the source of truth for serialized payload validation
+ * and business rules (pricing lock, payment-state restrictions, etc.).
  */
 
 /** Base object with fields common to Create and Edit (NO superRefine here) */
@@ -149,16 +151,4 @@ export const editEventSchema = eventBase
 export type CreateEventValues = z.infer<typeof createEventSchema>;
 export type EditEventValues = z.infer<typeof editEventSchema>;
 
-/** Serialized payloads for server actions */
-export type CreateEventPayload = {
-  title: string;
-  description: string;
-  date: string; // UTC ISO
-  eventTimeZone: string;
-  location: string;
-  category: EventCategory;
-  contactEmail: string | null;
-  contactPhone: string | null;
-  contactPhoneApps?: ContactPhoneApps;
-};
-export type UpdateEventPayload = CreateEventPayload & { id: string };
+// Serialized action payload types live in `@/types/eventPayloads`.

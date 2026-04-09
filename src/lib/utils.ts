@@ -330,6 +330,7 @@ export function buildEventsQS(
   if (filters.location)  qs.set("location", filters.location);
   if (filters.creator)   qs.set("creator",  filters.creator);
   if (filters.date)      qs.set("date",     filters.date);
+  if (filters.paid && filters.paid !== 'all') qs.set("paid", filters.paid);
 
   /* —— Visitor's TZ, received from the component —— */
   if (viewTz) qs.set("viewTz", viewTz);
@@ -361,6 +362,7 @@ export function buildOrganizerQS({ page, limit, filters = {} }: OrgParams) {
   if (filters.category) qs.set("category", filters.category);
   if (filters.location) qs.set("location", filters.location);
   if (filters.date)     qs.set("date",     filters.date);
+  if (filters.paid && filters.paid !== 'all') qs.set("paid", filters.paid);
 
   /* creator filter doesn't exist in organizer */
 
@@ -379,7 +381,7 @@ type AdminParams = {
 
 /**
  * Builds the query string for `/api/admin/events/[userId]`.
- * Only includes page, limit and the filters search | location | category | date.
+ * Only includes page, limit and the filters search | location | category | date | paid.
  * Never adds `viewTz`.
  */
 export function buildAdminQS({ page, limit, filters = {} }: AdminParams) {
@@ -392,6 +394,7 @@ export function buildAdminQS({ page, limit, filters = {} }: AdminParams) {
   if (filters.category) qs.set("category", filters.category);
   if (filters.location) qs.set("location", filters.location);
   if (filters.date)     qs.set("date",     filters.date);
+  if (filters.paid && filters.paid !== 'all') qs.set("paid", filters.paid);
 
   /* creator doesn't apply: userId comes in the route */
 

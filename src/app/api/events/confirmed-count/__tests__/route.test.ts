@@ -4,6 +4,7 @@ import type { EventsConfirmedCountResponse, EventsConfirmedCountData } from '@/t
 // --- Hoisted container ------------------------------------------------------
 const h = vi.hoisted(() => ({
   groupByMock: vi.fn(),
+  auth: vi.fn(),
 }))
 
 // --- Prisma mock ------------------------------------------------------------
@@ -17,6 +18,7 @@ vi.mock('@/lib/prisma', () => {
     },
   }
 })
+vi.mock('@clerk/nextjs/server', () => ({ auth: h.auth }))
 
 // Import the handler AFTER the mock has been defined.
 import { GET } from '@/app/api/events/confirmed-count/route'
@@ -30,6 +32,22 @@ const makeRequest = (qs = '') =>
 describe('GET /api/events/confirmed-count', () => {
   beforeEach(() => {
     h.groupByMock.mockReset()
+    h.auth.mockReset()
+    h.auth.mockResolvedValue({ userId: 'clerk_user_1' })
+  })
+
+  it('returns 401 and does not hit Prisma when unauthenticated', async () => {
+    h.auth.mockResolvedValueOnce({ userId: null })
+
+    const res = await GET(makeRequest('?ids=a,b'))
+    expect(res.status).toBe(401)
+
+    const body = (await res.json()) as EventsConfirmedCountResponse
+    expect(body).toEqual({
+      success: false,
+      error: 'Unauthorized',
+    })
+    expect(h.groupByMock).not.toHaveBeenCalled()
   })
 
   it('returns {} and does not hit Prisma when no ids are provided', async () => {
@@ -66,6 +84,7 @@ describe('GET /api/events/confirmed-count', () => {
         _count: { _all: true },
         where: expect.objectContaining({
           status: 'confirmed',
+          attendanceEntitlementStatus: 'active',
           eventId: { in: ids },
         }),
       })

@@ -10,7 +10,11 @@ import AutocompleteInput from './AutocompleteInput';
 import { Button } from '../ui/button';
 import { DateTimePicker } from '../ui/datetime-picker';
 import { SettingsSliderAnimatedIcon, SettingsSliderAnimatedIconClick } from '@/lib/icons';
-import { SearchbarFilterExtension, type SuggestionScope } from './Searchbar'; // Assuming Searchbar exports this
+import {
+  SearchbarFilterExtension,
+  type SuggestionScope,
+  type EventPaidFilter,
+} from './Searchbar';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 
 // This type should mirror the filters in the main Searchbar component
@@ -18,6 +22,7 @@ interface SearchbarAdvancedFilterState {
   location: string;
   creator: string;
   date?: Date;
+  paid: EventPaidFilter;
 }
 
 interface SearchbarAdvancedFilterProps {
@@ -34,6 +39,30 @@ interface SearchbarAdvancedFilterProps {
   suggestionScope?: SuggestionScope;
   localIndex?: Array<{ title: string; location: string; creatorLabel: string }>;
 }
+
+const PAID_FILTER_OPTIONS: Array<{ value: EventPaidFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'paid', label: 'Paid' },
+  { value: 'free', label: 'Free' },
+];
+
+const PAID_FILTER_BUTTON_STYLES: Record<
+  EventPaidFilter,
+  { active: string; inactive: string }
+> = {
+  all: {
+    active: 'bg-cyan-950/50 border-cyan-300/50 text-cyan-200 hover:bg-cyan-900/60',
+    inactive: 'bg-black border-zinc-700 text-zinc-200 hover:bg-cyan-950/25 hover:border-cyan-400/30 hover:text-cyan-100',
+  },
+  paid: {
+    active: 'bg-indigo-950/50 border-indigo-300/50 text-indigo-200 hover:bg-indigo-900/60',
+    inactive: 'bg-black border-zinc-700 text-zinc-200 hover:bg-indigo-950/25 hover:border-indigo-400/30 hover:text-indigo-100',
+  },
+  free: {
+    active: 'bg-emerald-950/50 border-emerald-300/50 text-emerald-200 hover:bg-emerald-900/60',
+    inactive: 'bg-black border-zinc-700 text-zinc-200 hover:bg-emerald-950/25 hover:border-emerald-400/30 hover:text-emerald-100',
+  },
+};
 
 export default function SearchbarAdvancedFilter({
   isDesktop,
@@ -52,31 +81,50 @@ export default function SearchbarAdvancedFilter({
   const [location, setLocation] = useState(initialFilters.location);
   const [creator, setCreator] = useState(initialFilters.creator);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(initialFilters.date);
+  const [selectedPaid, setSelectedPaid] = useState<EventPaidFilter>(initialFilters.paid);
+
+  const syncDraftFromInitialFilters = () => {
+    setLocation(initialFilters.location);
+    setCreator(initialFilters.creator);
+    setSelectedDate(initialFilters.date);
+    setSelectedPaid(initialFilters.paid);
+  };
+
+  const handlePanelToggle = (nextOpen: boolean) => {
+    if (nextOpen && !isPanelOpen) {
+      syncDraftFromInitialFilters();
+    }
+    onPanelToggle(nextOpen);
+  };
 
   const handleApply = () => {
     onApplyFilters({
       location,
       creator,
       date: selectedDate,
+      paid: selectedPaid,
     });
-    onPanelToggle(false);
+    handlePanelToggle(false);
   };
 
   const handleClearAll = () => {
     const nextLocation = '';
     const nextCreator = '';
     const nextDate: Date | undefined = undefined;
+    const nextPaid: EventPaidFilter = 'all';
 
     setLocation(nextLocation);
     setCreator(nextCreator);
     setSelectedDate(nextDate);
+    setSelectedPaid(nextPaid);
 
     onApplyFilters({
       location: nextLocation,
       creator: nextCreator,
       date: nextDate,
+      paid: nextPaid,
     });
-     onPanelToggle(false);
+    handlePanelToggle(false);
   };
 
 
@@ -84,11 +132,11 @@ export default function SearchbarAdvancedFilter({
 
   return (
     <div className={cn("relative", !isDesktop && "order-first")}>
-      <Popover open={isPanelOpen} onOpenChange={onPanelToggle} modal={false}>
+      <Popover open={isPanelOpen} onOpenChange={handlePanelToggle} modal={false}>
         <PopoverTrigger asChild>
           <button
             data-testid="sb-adv-open"
-            onClick={() => onPanelToggle(!isPanelOpen)}
+            onClick={() => handlePanelToggle(!isPanelOpen)}
             className={cn(
               "flex items-center overflow-visible justify-center rounded-full transition-all duration-300 ease-in-out shrink-0",
               isNarrowScreen
@@ -176,6 +224,31 @@ export default function SearchbarAdvancedFilter({
                   />
                 </div>
               )}
+
+              <div data-testid="sb-paid">
+                <label htmlFor="paid-filter" className="text-sm font-medium text-zinc-300 block mb-1">
+                  Pricing
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {PAID_FILTER_OPTIONS.map((option) => {
+                    const isActive = selectedPaid === option.value;
+                    const optionStyles = PAID_FILTER_BUTTON_STYLES[option.value];
+                    return (
+                      <Button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setSelectedPaid(option.value)}
+                        className={cn(
+                          'h-8 text-xs border transition-colors duration-200 ease-in',
+                          isActive ? optionStyles.active : optionStyles.inactive
+                        )}
+                      >
+                        {option.label}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
 
               <div>
                 <label htmlFor="date-filter" className="text-sm font-medium text-zinc-300 block mb-1">

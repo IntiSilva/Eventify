@@ -4,42 +4,48 @@ import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { z, ZodFormattedError } from "zod";
 import { revalidatePath } from "next/cache";
-import { EventCategory, UserRole, ContactPhoneApps, Prisma } from "@/generated/prisma";
+import { EventCategory, UserRole, Prisma, PaymentStatus } from "@/generated/prisma";
 import type { EventWithCreatorAndRsvps } from "@/types/event";
+import type { EventFormSerialized, UpdateEventFormSerialized } from "@/types/eventPayloads";
 import {
   DEFAULT_EVENT_TZ,
   computeEventLocalKeys,
-  yyyymmddKey,
   canonicalizeTimeZone,
   isValidIanaTimeZone,
   normalizeStringForSearch,
 } from "@/lib/utils";
 import { startOfDay, addYears, differenceInMinutes } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
+import { isStripeConnectReady } from "@/lib/payments/stripeConnectReadiness";
+import {
+  buildEventPricingQuote,
+  type EventPricingQuote,
+  type PricingPreviewMode,
+} from "@/lib/payments/pricingQuote.server";
 
 /**
- * Business-rule validation in the event's time zone.
- * We view both instants (now, event) in the event TZ and then compare:
+ * Business-rule validation for event scheduling.
  * - Not in the past
- * - If it's the same local day, it must be +4h from now
+ * - Absolute minimum lead time: +4h from now (no same-day gating)
  * - No more than 2 years into the future (local)z
  */
+
+const FOUR_HOURS_MS = 240 * 60 * 1000;
+
 function validateBusinessRules(utcInstant: Date, eventTz: string) {
-  const localNow = toZonedTime(new Date(), eventTz);
+  const now = new Date();
+  const localNow = toZonedTime(now, eventTz);
   const localEvent = toZonedTime(utcInstant, eventTz);
 
-  // No past events (in event TZ)
-  if (localEvent.getTime() < localNow.getTime()) {
-    throw new Error("Event date/time is in the past (event time zone).");
+  // No past/started events (absolute instant)
+  if (utcInstant.getTime() <= now.getTime()) {
+    throw new Error("Event date/time cannot be in the past.");
   }
 
-  // If same local day, require +4h
-  const sameDay = yyyymmddKey(localEvent) === yyyymmddKey(localNow);
-  if (sameDay) {
-    const diffMin = differenceInMinutes(localEvent, localNow);
-    if (diffMin < 240) {
-      throw new Error("Same-day events must be at least +4 hours from now (event time zone).");
-    }
+  // Absolute +4h minimum lead time (exactly 4h is allowed)
+  const leadTimeMs = utcInstant.getTime() - now.getTime();
+  if (leadTimeMs < FOUR_HOURS_MS) {
+    throw new Error("Event must be at least 4 hours from now.");
   }
 
   // Max 2 years ahead (in event TZ)
@@ -50,27 +56,133 @@ function validateBusinessRules(utcInstant: Date, eventTz: string) {
   }
 }
 
-/** Serialized payload accepted by create() */
-export type EventFormSerialized = {
-  title: string;
-  description: string;
-  date: string; // UTC ISO from client
-  location: string;
-  category: EventCategory;
-  contactEmail: string | null;
-  contactPhone: string | null;
-  contactPhoneApps?: ContactPhoneApps;
-  eventTimeZone?: string | null; // optional IANA TZ from UI
-  isPaid?: boolean;
-  priceCents?: number | null;
-  currency?: string | null;
+type PricingState = {
+  isPaid: boolean;
+  priceCents: number | null;
+  currency: string | null;
 };
 
-/** Serialized payload for update() (id required; other fields optional) */
-export type UpdateEventFormSerialized = Partial<EventFormSerialized> & {
-  id: string;
-  featuredByAdmin?: boolean;
+const MARKETPLACE_PAID_EVENT_GATE_MESSAGE =
+  "Paid events require an organizer with a fully enabled Stripe Connect account. Complete account details and enable charges and payouts before creating or updating paid events.";
+const INVALID_PAID_EVENT_OWNER_MESSAGE =
+  "Paid events must be owned by an organizer or admin account.";
+
+type PaidEventCreatorRoutingState = {
+  role: UserRole;
+  stripeConnectAccountId: string | null;
+  stripeConnectPayoutsEnabled: boolean;
+  stripeConnectChargesEnabled: boolean;
+  stripeConnectDetailsSubmitted: boolean;
 };
+
+function getPaidEventMarketplaceGateError(input: {
+  isPaidFinalState: boolean;
+  creator: PaidEventCreatorRoutingState | null | undefined;
+}): string | null {
+  if (!input.isPaidFinalState) return null;
+  if (!input.creator) {
+    return INVALID_PAID_EVENT_OWNER_MESSAGE;
+  }
+
+  if (input.creator.role === UserRole.admin) {
+    return null;
+  }
+
+  if (input.creator.role !== UserRole.organizer) {
+    return INVALID_PAID_EVENT_OWNER_MESSAGE;
+  }
+
+  const hasRoutingReadiness = isStripeConnectReady({
+    stripeConnectAccountId: input.creator.stripeConnectAccountId,
+    stripeConnectPayoutsEnabled: input.creator.stripeConnectPayoutsEnabled,
+    stripeConnectChargesEnabled: input.creator.stripeConnectChargesEnabled,
+    stripeConnectDetailsSubmitted: input.creator.stripeConnectDetailsSubmitted,
+  });
+
+  return hasRoutingReadiness ? null : MARKETPLACE_PAID_EVENT_GATE_MESSAGE;
+}
+
+function normalizePricingState(input: {
+  isPaid: boolean | null | undefined;
+  priceCents: number | null | undefined;
+  currency: string | null | undefined;
+}): PricingState {
+  const isPaid = Boolean(input.isPaid);
+  const currency = input.currency ? input.currency.toUpperCase() : null;
+  if (!isPaid) {
+    return { isPaid: false, priceCents: null, currency: null };
+  }
+  return {
+    isPaid: true,
+    priceCents: input.priceCents ?? null,
+    currency,
+  };
+}
+
+function pricingStatesEqual(a: PricingState, b: PricingState): boolean {
+  return a.isPaid === b.isPaid && a.priceCents === b.priceCents && a.currency === b.currency;
+}
+
+function isCompletePaidPricing(pricing: PricingState): boolean {
+  return pricing.isPaid ? Boolean(pricing.priceCents && pricing.currency) : true;
+}
+
+function requestedPricingFieldChange(data: UpdateEventInput): boolean {
+  return data.isPaid !== undefined || data.priceCents !== undefined || data.currency !== undefined;
+}
+
+function isPricingLockedForEventStart(eventStart: Date, now = new Date()): boolean {
+  // Final policy: exactly 4h remaining is allowed, so only block when strictly < 240 min.
+  return differenceInMinutes(eventStart, now) < 240;
+}
+
+function formatDateFieldError<T extends Record<string, unknown>>(message: string): ZodFormattedError<T> {
+  return new z.ZodError([
+    {
+      code: z.ZodIssueCode.custom,
+      path: ["date"],
+      message,
+    },
+  ]).format() as ZodFormattedError<T>;
+}
+
+const EVENT_WITH_CREATOR_AND_RSVPS_ARGS = Prisma.validator<Prisma.EventDefaultArgs>()({
+  include: {
+    creator: {
+      select: {
+        clerkId: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        imageUrl: true,
+        hasImage: true,
+        role: true,
+      },
+    },
+    rsvps: {
+      select: {
+        status: true,
+        reminderPreferenceType: true,
+        reminderOffsetMinutes: true,
+        reminderScheduledAt: true,
+        reminderSentAt: true,
+        user: {
+          select: {
+            clerkId: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            imageUrl: true,
+            hasImage: true,
+            role: true,
+          },
+        },
+      },
+    },
+  },
+});
+
+type EventWithCreatorAndRsvpsDbPayload = Prisma.EventGetPayload<typeof EVENT_WITH_CREATOR_AND_RSVPS_ARGS>;
 
 /**
  * Create schema (server accepts strings for dates):
@@ -118,28 +230,26 @@ const CreateEventSchema = z
   )
   .superRefine((data, ctx) => {
     try {
-      const utc = new Date(data.date);
+      const nowUTC = new Date();
+      const eventUTC = new Date(data.date);
       const tz = canonicalizeTimeZone(data.eventTimeZone ?? DEFAULT_EVENT_TZ);
-      const nowTz = toZonedTime(new Date(), tz);
-      const eventTz = toZonedTime(utc, tz);
+      const nowTz = toZonedTime(nowUTC, tz);
+      const eventTz = toZonedTime(eventUTC, tz);
 
-      // Past (in event TZ)
-      if (eventTz < nowTz) {
+      // Past/started (absolute instant)
+      if (eventUTC.getTime() <= nowUTC.getTime()) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Event date cannot be in the past.", path: ["date"] });
         return;
       }
 
-      // If same day → require +4h
-      const sameDay = yyyymmddKey(eventTz) === yyyymmddKey(nowTz);
-      if (sameDay) {
-        const diffMin = differenceInMinutes(eventTz, nowTz);
-        if (diffMin < 240) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "If the event is today, it must be at least 4 hours from now.",
-            path: ["date"],
-          });
-        }
+      // Absolute +4h minimum lead time (exactly 240 min is allowed)
+      const leadTimeMs = eventUTC.getTime() - nowUTC.getTime();
+      if (leadTimeMs < FOUR_HOURS_MS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Event must be at least 4 hours from now.",
+          path: ["date"],
+        });
       }
 
       // Max 2 years ahead
@@ -161,6 +271,54 @@ export type CreateEventResult =
   | { success: true; message: string; errors: null }
   | { success: false; message: string; errors: ZodFormattedError<EventFormSerialized> | null };
 
+const EventPricingPreviewSchema = z.object({
+  isPaid: z.boolean(),
+  priceCents: z.number().int().positive().nullable(),
+  currency: z.string().length(3).nullable(),
+  previewMode: z.enum(["organizer", "admin"]),
+});
+
+export type EventPricingPreviewData = EventPricingQuote;
+
+export type EventPricingPreviewResult =
+  | { success: true; data: EventPricingPreviewData | null }
+  | { success: false; message: string; data: null };
+
+export async function getEventPricingPreview(input: {
+  isPaid: boolean;
+  priceCents: number | null;
+  currency: string | null;
+  previewMode: PricingPreviewMode;
+}): Promise<EventPricingPreviewResult> {
+  const { userId: clerkId } = await auth();
+  if (!clerkId) {
+    return { success: false, message: "Unauthorized: User not logged in.", data: null };
+  }
+
+  const parsed = EventPricingPreviewSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      success: false,
+      message: "Invalid pricing preview payload.",
+      data: null,
+    };
+  }
+
+  const { isPaid, priceCents, currency, previewMode } = parsed.data;
+  if (!isPaid || !priceCents || !currency) {
+    return { success: true, data: null };
+  }
+
+  return {
+    success: true,
+    data: buildEventPricingQuote({
+      ticketAmountCents: priceCents,
+      currency,
+      previewMode,
+    }),
+  };
+}
+
 /**
  * CREATE
  * - Auth & RBAC (admin/organizer)
@@ -176,7 +334,14 @@ export async function createEvent(data: EventFormSerialized): Promise<CreateEven
 
   const user = await prisma.user.findUnique({
     where: { clerkId },
-    select: { role: true, clerkId: true },
+    select: {
+      role: true,
+      clerkId: true,
+      stripeConnectAccountId: true,
+      stripeConnectPayoutsEnabled: true,
+      stripeConnectChargesEnabled: true,
+      stripeConnectDetailsSubmitted: true,
+    },
   });
 
   if (!user) {
@@ -199,6 +364,18 @@ export async function createEvent(data: EventFormSerialized): Promise<CreateEven
   const { title, description, date, location, category, contactEmail, contactPhone, contactPhoneApps, eventTimeZone, isPaid, priceCents, currency } =
     result.data;
 
+  const marketplaceGateError = getPaidEventMarketplaceGateError({
+    isPaidFinalState: Boolean(isPaid),
+    creator: user,
+  });
+  if (marketplaceGateError) {
+    return {
+      success: false,
+      message: marketplaceGateError,
+      errors: null,
+    };
+  }
+
   const finalEventTzRaw = eventTimeZone ?? DEFAULT_EVENT_TZ;
   const finalEventTz = canonicalizeTimeZone(finalEventTzRaw);
   const eventDateUTC = new Date(date);
@@ -206,30 +383,65 @@ export async function createEvent(data: EventFormSerialized): Promise<CreateEven
   try {
     // Business rules in event TZ
     validateBusinessRules(eventDateUTC, finalEventTz);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid event date value.";
+    return {
+      success: false,
+      message: "Validation failed. Please check the form fields.",
+      errors: formatDateFieldError<EventFormSerialized>(message),
+    };
+  }
 
+  try {
     // Compute local keys for event TZ
     const { eventLocalDateKey, eventLocalMinuteOfDay } = computeEventLocalKeys(eventDateUTC, finalEventTz);
 
-    await prisma.event.create({
-      data: {
-        title,
-        normalizedTitle: normalizeStringForSearch(title),
-        description,
-        date: eventDateUTC, // store UTC
-        location,
-        normalizedLocation: normalizeStringForSearch(location),
-        category,
-        createdBy: clerkId,
-        contactEmail,
-        contactPhone,
-        contactPhoneApps,
-        eventTimeZone: finalEventTz,
-        eventLocalDateKey,
-        eventLocalMinuteOfDay,
-        isPaid: Boolean(isPaid),
-        priceCents: isPaid ? (priceCents ?? null) : null,
-        currency: isPaid ? (currency?.toUpperCase() ?? null) : null,
-      },
+    const normalizedPricing = normalizePricingState({
+      isPaid,
+      priceCents,
+      currency,
+    });
+
+    await prisma.$transaction(async (tx) => {
+      const createdEvent = await tx.event.create({
+        data: {
+          title,
+          normalizedTitle: normalizeStringForSearch(title),
+          description,
+          date: eventDateUTC, // store UTC
+          location,
+          normalizedLocation: normalizeStringForSearch(location),
+          category,
+          createdBy: clerkId,
+          contactEmail,
+          contactPhone,
+          contactPhoneApps,
+          eventTimeZone: finalEventTz,
+          eventLocalDateKey,
+          eventLocalMinuteOfDay,
+          isPaid: normalizedPricing.isPaid,
+          priceCents: normalizedPricing.priceCents,
+          currency: normalizedPricing.currency,
+        },
+        select: { id: true },
+      });
+
+      const initialPriceVersion = await tx.eventPriceVersion.create({
+        data: {
+          eventId: createdEvent.id,
+          versionNumber: 1,
+          isPaid: normalizedPricing.isPaid,
+          amountCents: normalizedPricing.priceCents,
+          currency: normalizedPricing.currency,
+          createdBy: clerkId,
+        },
+        select: { id: true },
+      });
+
+      await tx.event.update({
+        where: { id: createdEvent.id },
+        data: { currentPriceVersionId: initialPriceVersion.id },
+      });
     });
 
     // Revalidate public/organizer views
@@ -293,23 +505,20 @@ const UpdateEventSchema = z
         const nowTz = toZonedTime(nowUTC, tz);
         const eventTz = toZonedTime(eventUTC, tz);
 
-        // Past (in event TZ)
-        if (eventTz < nowTz) {
+        // Past/started (absolute instant)
+        if (eventUTC.getTime() <= nowUTC.getTime()) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Event date cannot be in the past.", path: ["date"] });
           return;
         }
 
-        // If same day → require +4h
-        const sameDay = yyyymmddKey(eventTz) === yyyymmddKey(nowTz);
-        if (sameDay) {
-          const diffMin = differenceInMinutes(eventTz, nowTz);
-          if (diffMin < 240) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              message: "If the event is today, it must be at least 4 hours from now.",
-              path: ["date"],
-            });
-          }
+        // Absolute +4h minimum lead time (exactly 240 min is allowed)
+        const leadTimeMs = eventUTC.getTime() - nowUTC.getTime();
+        if (leadTimeMs < FOUR_HOURS_MS) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Event must be at least 4 hours from now.",
+            path: ["date"],
+          });
         }
 
         // Max 2 years ahead
@@ -367,7 +576,14 @@ export async function updateEvent(
 
   const user = await prisma.user.findUnique({
     where: { clerkId },
-    select: { role: true, clerkId: true },
+    select: {
+      role: true,
+      clerkId: true,
+      stripeConnectAccountId: true,
+      stripeConnectPayoutsEnabled: true,
+      stripeConnectChargesEnabled: true,
+      stripeConnectDetailsSubmitted: true,
+    },
   });
   if (!user) {
     return { success: false, message: "Unauthorized: User not found.", errors: null };
@@ -390,7 +606,8 @@ export async function updateEvent(
   }
 
   // --- Build update payload ---
-  const dataToUpdate: Prisma.EventUpdateInput = {};
+  // Scalar-only update payload to avoid Prisma checked/unchecked XOR conflicts.
+  const dataToUpdate: Prisma.EventUncheckedUpdateInput = {};
 
   // Normalize title/location if present
   if (result.data.title !== undefined) {
@@ -402,18 +619,105 @@ export async function updateEvent(
     dataToUpdate.normalizedLocation = normalizeStringForSearch(result.data.location);
   }
 
-  // Simple scalar fields
+  // Simple scalar fields (ticketing/pricing fields are handled below with policy checks)
   if (result.data.description !== undefined) dataToUpdate.description = result.data.description;
   if (result.data.category !== undefined) dataToUpdate.category = result.data.category;
   if (result.data.featuredByAdmin !== undefined) dataToUpdate.featuredByAdmin = result.data.featuredByAdmin;
-  if (result.data.isPaid !== undefined) dataToUpdate.isPaid = result.data.isPaid;
-  if (result.data.priceCents !== undefined) dataToUpdate.priceCents = result.data.priceCents;
-  if (result.data.currency !== undefined) dataToUpdate.currency = result.data.currency ? result.data.currency.toUpperCase() : null;
 
   // Contact fields (nullable)
   if (result.data.contactEmail !== undefined) dataToUpdate.contactEmail = result.data.contactEmail;
   if (result.data.contactPhone !== undefined) dataToUpdate.contactPhone = result.data.contactPhone;
   if (result.data.contactPhoneApps !== undefined) dataToUpdate.contactPhoneApps = result.data.contactPhoneApps;
+
+  // --- Ticketing/pricing policy (server is source of truth) ---
+  const pricingInputTouched = requestedPricingFieldChange(result.data);
+  const existingPricing = normalizePricingState({
+    isPaid: existing.isPaid,
+    priceCents: existing.priceCents,
+    currency: existing.currency,
+  });
+  const nextPricing = normalizePricingState({
+    isPaid: result.data.isPaid ?? existingPricing.isPaid,
+    priceCents: result.data.priceCents !== undefined ? result.data.priceCents : existingPricing.priceCents,
+    currency: result.data.currency !== undefined ? result.data.currency : existingPricing.currency,
+  });
+  const pricingChanged = pricingInputTouched && !pricingStatesEqual(existingPricing, nextPricing);
+
+  // Final-state validation (update payload is partial, so this must use persisted values)
+  if (pricingInputTouched && !isCompletePaidPricing(nextPricing)) {
+    return { success: false, message: "Paid events require price and currency.", errors: null };
+  }
+
+  const paidEventCreator =
+    nextPricing.isPaid
+      ? existing.createdBy === user.clerkId
+        ? user
+        : await prisma.user.findUnique({
+            where: { clerkId: existing.createdBy },
+            select: {
+              role: true,
+              clerkId: true,
+              stripeConnectAccountId: true,
+              stripeConnectPayoutsEnabled: true,
+              stripeConnectChargesEnabled: true,
+              stripeConnectDetailsSubmitted: true,
+            },
+          })
+      : null;
+
+  const marketplaceGateError = getPaidEventMarketplaceGateError({
+    isPaidFinalState: nextPricing.isPaid,
+    creator: paidEventCreator,
+  });
+  if (marketplaceGateError) {
+    return {
+      success: false,
+      message: marketplaceGateError,
+      errors: null,
+    };
+  }
+
+  if (pricingChanged) {
+    // Final policy: pricing lock is evaluated against persisted event start (anti-bypass).
+    if (isPricingLockedForEventStart(existing.date)) {
+      return {
+        success: false,
+        message: "Pricing changes are locked within 4 hours of the event start.",
+        errors: null,
+      };
+    }
+
+    const isPaidToFree = existingPricing.isPaid && !nextPricing.isPaid;
+    const currencyChanged = nextPricing.currency !== existingPricing.currency;
+
+    if (isPaidToFree || currencyChanged) {
+      const succeededPayment = await prisma.payment.findFirst({
+        where: { eventId: existing.id, status: PaymentStatus.succeeded },
+        select: { id: true },
+      });
+
+      if (succeededPayment) {
+        if (isPaidToFree) {
+          return {
+            success: false,
+            message: "Cannot switch this event to free because at least one payment has already succeeded.",
+            errors: null,
+          };
+        }
+        if (currencyChanged) {
+          return {
+            success: false,
+            message: "Cannot change currency because at least one payment has already succeeded.",
+            errors: null,
+          };
+        }
+      }
+    }
+
+    dataToUpdate.isPaid = nextPricing.isPaid;
+    dataToUpdate.priceCents = nextPricing.priceCents;
+    dataToUpdate.currency = nextPricing.currency;
+  }
 
   // --- Date/TZ handling ---
   // Determine final TZ after this update. If either date or TZ changes, recompute local keys.
@@ -423,8 +727,17 @@ export async function updateEvent(
   if (result.data.date !== undefined) {
     const newUtcDate = new Date(result.data.date);
 
-    // Business rules in final TZ
-    validateBusinessRules(newUtcDate, finalEventTz);
+    try {
+      // Business rules in final TZ
+      validateBusinessRules(newUtcDate, finalEventTz);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid event date value.";
+      return {
+        success: false,
+        message: "Validation failed. Please check the form fields.",
+        errors: formatDateFieldError<UpdateEventInput>(message),
+      };
+    }
 
     // Compute new local keys
     const { eventLocalDateKey, eventLocalMinuteOfDay } = computeEventLocalKeys(newUtcDate, finalEventTz);
@@ -442,43 +755,53 @@ export async function updateEvent(
   }
 
   try {
-    const updated = await prisma.event.update({
-      where: { id: result.data.id },
-      data: dataToUpdate,
-      include: {
-        creator: {
-          select: {
-            clerkId: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            imageUrl: true,
-            hasImage: true,
-            role: true,
-          },
-        },
-        rsvps: {
-          select: {
-            status: true,
-            reminderPreferenceType: true,
-            reminderOffsetMinutes: true,
-            reminderScheduledAt: true,
-            reminderSentAt: true,
-            user: {
-              select: {
-                clerkId: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-                imageUrl: true,
-                hasImage: true,
-                role: true,
-              },
+    const updated: EventWithCreatorAndRsvpsDbPayload = pricingChanged
+      ? await prisma.$transaction(async (tx) => {
+          const now = new Date();
+
+          const latestPriceVersion = await tx.eventPriceVersion.findFirst({
+            where: { eventId: existing.id },
+            orderBy: { versionNumber: "desc" },
+            select: { versionNumber: true },
+          });
+          const nextVersionNumber = (latestPriceVersion?.versionNumber ?? 0) + 1;
+
+          if (existing.currentPriceVersionId) {
+            await tx.eventPriceVersion.updateMany({
+              where: { id: existing.currentPriceVersionId, supersededAt: null },
+              data: { supersededAt: now },
+            });
+          }
+
+          const createdPriceVersion = await tx.eventPriceVersion.create({
+            data: {
+              eventId: existing.id,
+              versionNumber: nextVersionNumber,
+              isPaid: nextPricing.isPaid,
+              amountCents: nextPricing.priceCents,
+              currency: nextPricing.currency,
+              createdBy: clerkId,
+              effectiveAt: now,
             },
-          },
-        },
-      },
-    });
+            select: { id: true },
+          });
+
+          const txData: Prisma.EventUncheckedUpdateInput = {
+            ...dataToUpdate,
+            currentPriceVersionId: createdPriceVersion.id,
+          };
+
+          return tx.event.update({
+            where: { id: result.data.id },
+            data: txData,
+            ...EVENT_WITH_CREATOR_AND_RSVPS_ARGS,
+          });
+        })
+      : await prisma.event.update({
+          where: { id: result.data.id },
+          data: dataToUpdate,
+          ...EVENT_WITH_CREATOR_AND_RSVPS_ARGS,
+        });
 
 
 
@@ -499,15 +822,15 @@ export async function updateEvent(
   }
 }
 
-/** Standard result for delete actions */
-export type DeleteEventResult = { success: boolean; message: string };
+/** Standard result for archive actions */
+export type ArchiveEventResult = { success: boolean; message: string };
 
 /**
- * DELETE
+ * ARCHIVE
  * - Auth & RBAC (admin/organizer + ownership for organizers)
  * - Returns a consistent JSON structure
  */
-export async function deleteEvent(eventId: string): Promise<DeleteEventResult> {
+export async function archiveEvent(eventId: string): Promise<ArchiveEventResult> {
   const { userId: clerkId } = await auth();
   if (!clerkId) return { success: false, message: "Unauthorized" };
 
@@ -520,7 +843,7 @@ export async function deleteEvent(eventId: string): Promise<DeleteEventResult> {
   const isAdmin = user.role === UserRole.admin;
   const isOrganizer = user.role === UserRole.organizer;
   if (!isAdmin && !isOrganizer) {
-    return { success: false, message: "Forbidden: User does not have permission to delete events." };
+    return { success: false, message: "Forbidden: User does not have permission to archive events." };
   }
 
   const existing = await prisma.event.findUnique({
@@ -530,17 +853,20 @@ export async function deleteEvent(eventId: string): Promise<DeleteEventResult> {
   if (!existing) return { success: false, message: "Event not found." };
 
   if (!isAdmin && isOrganizer && existing.createdBy !== clerkId) {
-    return { success: false, message: "Forbidden: You can only delete your own events." };
+    return { success: false, message: "Forbidden: You can only archive your own events." };
   }
 
   try {
-    await prisma.event.delete({ where: { id: eventId } });
+    await prisma.event.update({
+      where: { id: eventId },
+      data: { archivedAt: new Date() },
+    });
     revalidatePath("/organizer");
     revalidatePath("/admin");
     revalidatePath("/");
-    return { success: true, message: "Event deleted successfully." };
+    return { success: true, message: "Event archived successfully." };
   } catch (error) {
-    console.error("Error deleting event:", error);
-    return { success: false, message: "Database error: Failed to delete event." };
+    console.error("Error archiving event:", error);
+    return { success: false, message: "Database error: Failed to archive event." };
   }
 }

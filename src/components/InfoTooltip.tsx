@@ -107,7 +107,7 @@ export default function InfoTooltip({
         aria-hidden="true"
         className={cn(
           "inline-flex items-center justify-center font-semibold leading-none",
-          size === "sm" && "translate-x-[0.2px] md:translate-x-[0.5px] -translate-y-[0.5px]"
+          size === "sm" && "translate-x-[0.2px] -translate-y-[0.5px]"
         )}
       >
         i
@@ -329,6 +329,77 @@ export function FeaturedThresholdTooltip(props: Omit<InfoTooltipProps, "content"
         </div>
       }
       {...props}
+    />
+  );
+}
+
+// -----------------------------------------------------------------------------
+// PaidEventPricingTooltip (compact, highlight-only)
+// -----------------------------------------------------------------------------
+export function PaidEventPricingTooltip(
+  props: Omit<InfoTooltipProps, 'content'> & { where: 'create' | 'edit' }
+) {
+  const { where, ...rest } = props;
+
+  const ok = 'text-emerald-400 font-medium';
+  const warn = 'text-rose-400 font-medium';
+
+  const baseList = 'list-disc pl-4 space-y-1 text-xs md:text-sm leading-snug';
+
+  const contentByWhere: Record<'create' | 'edit', React.ReactNode> = {
+    create: (
+      <ul className={baseList}>
+        <li>
+          Paid events require <span className={ok}>currency + price</span>.
+        </li>
+        <li>
+          Price edits affect <span className={ok}>future purchases only</span>.
+        </li>
+        <li>
+          Pricing changes are <span className={warn}>locked</span> within{' '}
+          <span className={warn}>4 hours</span> of event start.
+        </li>
+        <li>
+          After the first <span className={warn}>successful payment</span>, you{' '}
+          <span className={warn}>can&apos;t</span> change currency or switch back to free.
+        </li>
+        <li>
+          Lowering the price does <span className={warn}>not</span> auto-refund earlier buyers.
+        </li>
+      </ul>
+    ),
+    edit: (
+      <ul className={baseList}>
+        <li>
+          Price edits affect <span className={ok}>future purchases only</span>.
+        </li>
+        <li>
+          You <span className={warn}>can&apos;t</span> change currency after any{' '}
+          <span className={warn}>successful payment</span>.
+        </li>
+        <li>
+          You <span className={warn}>can&apos;t</span> switch paid → free after any{' '}
+          <span className={warn}>successful payment</span>.
+        </li>
+        <li>
+          Pricing changes are <span className={warn}>locked</span> within{' '}
+          <span className={warn}>4 hours</span> of event start.
+        </li>
+        <li>
+          Lowering the price does <span className={warn}>not</span> auto-refund earlier buyers.
+        </li>
+      </ul>
+    ),
+  };
+
+  return (
+    <InfoTooltip
+      ariaLabel={where === 'create' ? 'Paid event pricing rules' : 'Pricing edit rules'}
+      side="top"
+      align="start"
+      maxWidth="max-w-xs"
+      content={contentByWhere[where]}
+      {...rest}
     />
   );
 }

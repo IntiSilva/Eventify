@@ -1,0 +1,4 @@
+ALTER TABLE "RefundRequest"
+ADD COLUMN "attemptCount" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN "lastError" VARCHAR(1000),
+ADD COLUMN "lastAttemptAt" TIMESTAMP(3);

@@ -64,6 +64,12 @@ import InfoAnimatedIconHover from './info-animated-icon-hover.json'
 
 import ViewAnimatedIcon from './view-animated-icon.json'
 
+import HistoryAnimatedIcon from './history-animated-icon.json'
+import HistoryAnimatedIconHover from './history-animated-icon-hover.json'
+
+import TicketAnimatedIcon from './ticket-animated-icon.json'
+import TicketAnimatedIconHover from './ticket-animated-icon-hover.json'
+
 
 export {
     LottieDoubleTapAnimatedIcon,
@@ -110,4 +116,8 @@ export {
     InfoAnimatedIcon,
     InfoAnimatedIconHover,
     ViewAnimatedIcon,
+    HistoryAnimatedIcon,
+    HistoryAnimatedIconHover,
+    TicketAnimatedIcon,
+    TicketAnimatedIconHover,
 }

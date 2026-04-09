@@ -1,19 +1,34 @@
 'use client';
 
-import { useEffect, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { editEventSchema, type EditEventValues } from '@/schemas/events';
-import { updateEvent, type UpdateEventFormSerialized } from '@/app/(dashboard)/events/actions';
+import {
+  updateEvent,
+  getEventPricingPreview,
+  type EventPricingPreviewData,
+} from '@/app/(dashboard)/events/actions';
+import type { UpdateEventFormSerialized } from '@/types/eventPayloads';
 import { toast } from 'sonner';
 
 import type { EditableEvent, EventWithCreatorAndRsvps } from '@/types/event';
-import { capitalizeFirstLetter, cn, pickerDateToUtc, utcIsoToWallClockDate, tzEqualForInstant, canonicalizeTimeZone } from '@/lib/utils';
+import {
+  capitalizeFirstLetter,
+  cn,
+  pickerDateToUtc,
+  utcIsoToWallClockDate,
+  tzEqualForInstant,
+  canonicalizeTimeZone,
+  formatPrice,
+} from '@/lib/utils';
 import { useViewerTz } from '@/contexts/ViewerTzContext';
 import { useMenu } from '@/contexts/MenuContext';
 import { applyZodErrorsToForm, toFormError } from "@/lib/formErrors";
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
+import { CurrencySelect, type Currency } from '@/components/ui/currency-select';
 import {
   Form,
   FormControl,
@@ -30,7 +45,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { DateTimePicker } from '../ui/datetime-picker';
-import { EventCategory } from '@/generated/prisma';
+import { EventCategory, UserRole } from '@/generated/prisma';
 import { PhoneInput } from '@/components/ui/phone-input';
 import { isValidPhoneNumber } from 'react-phone-number-input';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -40,11 +55,48 @@ import { CollapseMotion } from "@/components/FormsRelated/CollapseMotion";
 import AnimatedCharactersCounter from '../AnimatedText/AnimatedCharactersCounter';
 import AnimatedIcon from '../LordIcons/AnimatedIcon';
 import { FileAnimatedIcon } from '@/lib/icons';
+import { PaidEventPricingTooltip } from '@/components/InfoTooltip';
 import { Textarea } from '../ui/textarea';
 import { Loader2 } from 'lucide-react';
 import { startOfDay, addYears } from 'date-fns';
+import { NumericFormat } from "react-number-format";
+import { isStripeConnectReady } from '@/lib/payments/stripeConnectReadiness';
 
+function formatPriceAmountFromCents(priceCents: number | null, currency: string | null): string {
+  if (priceCents == null) return "";
+  const code = (currency ?? "").toUpperCase();
+  const isZeroDecimal = code === "JPY" || code === "CLP";
+  if (isZeroDecimal) return String(priceCents);
+  return String(priceCents / 100);
+}
 
+function parsePriceAmountToCents(priceAmount: string | undefined, exponent: number): number | null {
+  const raw = (priceAmount ?? '').trim()
+  const parsed = raw ? Number(raw) : Number.NaN
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return exponent === 0 ? Math.round(parsed) : Math.round(parsed * 100)
+}
+
+function hasOwnerConnectReadinessSnapshot(
+  owner: EditableEvent['creator'] | null | undefined
+): owner is NonNullable<EditableEvent['creator']> &
+  Required<
+    Pick<
+      NonNullable<EditableEvent['creator']>,
+      | 'stripeConnectAccountId'
+      | 'stripeConnectPayoutsEnabled'
+      | 'stripeConnectChargesEnabled'
+      | 'stripeConnectDetailsSubmitted'
+    >
+  > {
+  return (
+    Boolean(owner) &&
+    typeof owner?.stripeConnectAccountId !== 'undefined' &&
+    typeof owner?.stripeConnectPayoutsEnabled === 'boolean' &&
+    typeof owner?.stripeConnectChargesEnabled === 'boolean' &&
+    typeof owner?.stripeConnectDetailsSubmitted === 'boolean'
+  );
+}
 
 export default function EditEventForm({
   event,
@@ -58,6 +110,14 @@ export default function EditEventForm({
   const [isPending, startTransition] = useTransition();
   const { viewerTz } = useViewerTz();
   const { profilePhone } = useMenu(); // may be: undefined (loading) | null (no phone) | string
+  const [selectedCurrency, setSelectedCurrency] = useState<Currency | null>(null);
+  const [pricingPreview, setPricingPreview] = useState<EventPricingPreviewData | null>(null);
+  const [pricingPreviewLoading, setPricingPreviewLoading] = useState(false);
+  const ownerConnectSnapshotAvailable = hasOwnerConnectReadinessSnapshot(event.creator);
+  const requiresReadyOrganizerOwner =
+    event.creator?.role === UserRole.organizer &&
+    ownerConnectSnapshotAvailable &&
+    !isStripeConnectReady(event.creator);
 
   // Determine default zone and mode based on the event’s zone
   const defaultEventTz = event.eventTimeZone ?? viewerTz;
@@ -82,7 +142,10 @@ export default function EditEventForm({
       // if the event already had a selection, use it; if it had a phone but no apps (legacy data), default to 'whatsapp'; if no phone, leave undefined
       // normalize DB null -> undefined for RHF/Zod optional
       contactPhoneApps: event.contactPhone ? (event.contactPhoneApps ?? undefined) : undefined,
-      useProfilePhone: false, 
+      useProfilePhone: false,
+      isPaid: event.isPaid ?? false,
+      priceAmount: formatPriceAmountFromCents(event.priceCents, event.currency),
+      currency: event.currency ?? "",
     },
   });
 
@@ -91,11 +154,21 @@ export default function EditEventForm({
     name: 'eventTimeZone',
   });
 
-  const [titleValue, descriptionValue, locationValue, useProfilePhoneValue] = useWatch({
+  const [titleValue, descriptionValue, locationValue, useProfilePhoneValue, isPaidValue, currencyValue, priceAmountValue] = useWatch({
     control: form.control,
-    name: ["title", "description", "location", "useProfilePhone"],
+    name: ["title", "description", "location", "useProfilePhone", "isPaid", "currency", "priceAmount"],
   });
   const shouldShowManualPhoneInput = !useProfilePhoneValue;
+  const currencyCode = (currencyValue ?? "").toUpperCase();
+  const isZeroDecimal = currencyCode === "JPY" || currencyCode === "CLP";
+  const exponent = isZeroDecimal ? 0 : 2;
+  const pricingPreviewMode =
+    event.creator?.role === UserRole.organizer
+      ? 'organizer'
+      : event.creator?.role === UserRole.admin
+        ? 'admin'
+        : null;
+  const shouldShowPricingPreview = pricingPreviewMode !== null;
   // Current phone values (profile and manual)
   const manualPhoneE164 = useWatch({ control: form.control, name: "contactPhone" }) ?? "";
   const profilePhoneE164 = profilePhone ?? ""; // can be empty if no profile phone
@@ -156,6 +229,59 @@ export default function EditEventForm({
     }
   }, [viewerTz, form]);
 
+  useEffect(() => {
+    const normalizedCurrency = (currencyValue ?? '').trim().toUpperCase()
+    const parsedPriceCents = parsePriceAmountToCents(priceAmountValue ?? '', exponent)
+
+    if (
+      !pricingPreviewMode ||
+      !isPaidValue ||
+      !parsedPriceCents ||
+      normalizedCurrency.length !== 3
+    ) {
+      setPricingPreview(null)
+      setPricingPreviewLoading(false)
+      return
+    }
+
+    let canceled = false
+    setPricingPreviewLoading(true)
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await getEventPricingPreview({
+            isPaid: true,
+            priceCents: parsedPriceCents,
+            currency: normalizedCurrency,
+            previewMode: pricingPreviewMode,
+          })
+          if (canceled) return
+          setPricingPreview(result.success ? result.data : null)
+        } catch {
+          if (!canceled) {
+            setPricingPreview(null)
+          }
+        } finally {
+          if (!canceled) {
+            setPricingPreviewLoading(false)
+          }
+        }
+      })()
+    }, 250)
+
+    return () => {
+      canceled = true
+      window.clearTimeout(timer)
+    }
+  }, [
+    currencyValue,
+    exponent,
+    isPaidValue,
+    priceAmountValue,
+    pricingPreviewMode,
+  ])
+
   function onSubmit(values: EditEventValues) {
     const loadingToastId = toast.loading("Editing your event...");
 
@@ -172,10 +298,24 @@ export default function EditEventForm({
             contactPhoneApps,
             tzMode,
             eventTimeZone,
+            isPaid,
+            priceAmount,
+            currency,
           } = values;
 
           const finalTz = tzMode === "auto" ? viewerTz : eventTimeZone!;
           const eventDateUTC = pickerDateToUtc(date, finalTz);
+          const rawPrice = (priceAmount ?? "").trim();
+          const parsedAmount = rawPrice ? Number(rawPrice) : NaN;
+          const normalizedIsPaid = isPaid === true;
+          const normalizedPriceCents =
+            normalizedIsPaid && Number.isFinite(parsedAmount) && parsedAmount > 0
+              ? (exponent === 0 ? Math.round(parsedAmount) : Math.round(parsedAmount * 100))
+              : null;
+          const normalizedCurrency =
+            normalizedIsPaid && currency?.trim()
+              ? currency.trim().toUpperCase()
+              : null;
 
           const payload: UpdateEventFormSerialized = {
             id: event.id,                                               // ← required in update
@@ -188,6 +328,9 @@ export default function EditEventForm({
             contactEmail: contactEmail?.trim() || null,                 // "" -> null
             contactPhone: contactPhone?.trim() || null,                 // "" -> null
             contactPhoneApps: contactPhone ? contactPhoneApps : undefined, // keep undefined until user chooses
+            isPaid: normalizedIsPaid,
+            priceCents: normalizedPriceCents,
+            currency: normalizedCurrency,
           };
 
           const result = await updateEvent(payload);
@@ -378,6 +521,158 @@ export default function EditEventForm({
           )}
         />
 
+        {/* Pricing / ticketing */}
+        <FormField
+          control={form.control}
+          name="isPaid"
+          render={({ field }) => (
+            <FormItem className="flex flex-row items-center justify-between rounded-md border p-4 bg-black border-zinc-700">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <FormLabel>Paid event</FormLabel>
+                  <PaidEventPricingTooltip where="edit" />
+                </div>
+                <p className="text-xs text-zinc-400">Changes apply to future purchases only.</p>
+              </div>
+              <FormControl>
+                <Switch
+                  checked={field.value}
+                  onCheckedChange={field.onChange}
+                  disabled={requiresReadyOrganizerOwner}
+                  className="data-[state=unchecked]:bg-zinc-900 data-[state=checked]:bg-emerald-600 cursor-pointer"
+                />
+              </FormControl>
+            </FormItem>
+          )}
+        />
+        {requiresReadyOrganizerOwner && (
+          <p className="mt-2 text-xs text-amber-300">
+            This event pays out to the organizer, so Stripe Connect must be fully enabled before it can stay paid.
+          </p>
+        )}
+
+        <CollapseMotion show={!!isPaidValue} variant="blur-in">
+          <div className="space-y-3 rounded-md border border-zinc-800 bg-zinc-950/30 p-4">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-white">Ticket price</p>
+              <p className="text-xs text-zinc-400">See the info tooltip above for pricing rules and restrictions.</p>
+            </div>
+
+            <div className="flex items-start gap-2">
+              <FormField
+                control={form.control}
+                name="currency"
+                render={({ field, fieldState }) => (
+                  <FormControl>
+                    <CurrencySelect
+                      {...field}
+                      onValueChange={field.onChange}
+                      onCurrencySelect={setSelectedCurrency}
+                      placeholder="USD"
+                      currencies="all"
+                      variant="small"
+                      disabled={requiresReadyOrganizerOwner}
+                      valid={!fieldState.invalid}
+                    />
+                  </FormControl>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="priceAmount"
+                render={({ field, fieldState }) => (
+                  <div className="relative w-full">
+                    <FormControl>
+                      <NumericFormat
+                        customInput={Input}
+                        value={field.value ?? ""}
+                        onValueChange={(values) => field.onChange(values.value || "")}
+                        valueIsNumericString
+                        thousandSeparator="."
+                        decimalSeparator=","
+                        allowedDecimalSeparators={[".", ","]}
+                        decimalScale={exponent}
+                        fixedDecimalScale={false}
+                        allowNegative={false}
+                        disabled={requiresReadyOrganizerOwner}
+                        placeholder="0"
+                        className={cn(
+                          "pr-10 bg-black text-white border-zinc-700 placeholder:text-zinc-400",
+                          "focus-visible:ring-emerald-500 focus-visible:border-emerald-500",
+                          fieldState.invalid && "border-red-500"
+                        )}
+                      />
+                    </FormControl>
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-zinc-300">
+                      {selectedCurrency?.symbol}
+                    </span>
+                  </div>
+                )}
+              />
+            </div>
+
+            {(form.formState.errors.currency || form.formState.errors.priceAmount) && (
+              <div className="text-[0.8rem] font-medium text-destructive">
+                {form.formState.errors.currency?.message && <p>{form.formState.errors.currency.message}</p>}
+                {form.formState.errors.priceAmount?.message && <p>{form.formState.errors.priceAmount.message}</p>}
+              </div>
+            )}
+
+            {shouldShowPricingPreview && (
+              <div className="mt-2 rounded-md border border-zinc-800 bg-zinc-950/30 p-3">
+                <p className="text-xs uppercase tracking-wide text-zinc-500">Pricing Preview</p>
+
+                {pricingPreviewLoading ? (
+                  <p className="mt-2 text-xs text-zinc-400">Updating preview...</p>
+                ) : pricingPreview ? (
+                  <div className="mt-2 space-y-1.5 text-sm">
+                    <div className="flex items-center justify-between text-zinc-300">
+                      <span>Ticket price</span>
+                      <span className="text-white">
+                        {formatPrice(pricingPreview.exact.ticketAmountCents, pricingPreview.currency)}
+                      </span>
+                    </div>
+                    {pricingPreview.previewMode === 'organizer' && (
+                      <div className="flex items-center justify-between text-zinc-300">
+                        <span>Platform fee</span>
+                        <span className="text-white">
+                          {formatPrice(pricingPreview.exact.platformFeeAmountCents, pricingPreview.currency)}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-zinc-300">
+                      <span>Estimated Stripe fee</span>
+                      <span>
+                        {formatPrice(pricingPreview.estimated.stripeFeeAmountCents, pricingPreview.currency)}
+                      </span>
+                    </div>
+                    <div className="h-px bg-zinc-800" />
+                    <div className="flex items-center justify-between font-medium text-emerald-300">
+                      <span>
+                        {pricingPreview.previewMode === 'organizer'
+                          ? 'Estimated organizer net'
+                          : 'Estimated final net'}
+                      </span>
+                      <span>
+                        {formatPrice(pricingPreview.estimated.finalNetAmountCents, pricingPreview.currency)}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-zinc-400">
+                    Enter a valid paid ticket price to preview your estimated payout.
+                  </p>
+                )}
+
+                <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+                  Estimated fields may vary from final Stripe settlement values.
+                </p>
+              </div>
+            )}
+          </div>
+        </CollapseMotion>
+
         {/* Category */}
         <FormField
           control={form.control}
@@ -520,7 +815,7 @@ export default function EditEventForm({
               "focus-visible:outline-none focus-visible:ring-0",
             )}
           >
-            {isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Save Changes"}
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Changes"}
           </Button>
         </div>
       </form>

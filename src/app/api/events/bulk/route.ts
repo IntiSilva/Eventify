@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { RSVPStatus } from "@/generated/prisma";
 import { getEventsWithDetails } from "@/lib/data";
@@ -11,6 +12,15 @@ type Body = {
 
 export async function POST(req: Request) {
   try {
+    const { userId } = await auth();
+    if (!userId) {
+      const errBody: ApiErrorResponse = {
+        success: false,
+        error: "Unauthorized",
+      };
+      return NextResponse.json(errBody, { status: 401 });
+    }
+
     let body: Body;
     try {
       body = (await req.json()) as Body;
@@ -31,14 +41,27 @@ export async function POST(req: Request) {
       ),
     ];
 
-    // rsvpStatus comes from JSON => validate it
+    // rsvpStatus comes from JSON => required + validated (fail closed)
     const rawStatus = body.rsvpStatus;
-    const status =
-      rawStatus === RSVPStatus.confirmed ||
-      rawStatus === RSVPStatus.pending ||
-      rawStatus === RSVPStatus.canceled
-        ? rawStatus
-        : undefined;
+    if (rawStatus == null) {
+      const errBody: ApiErrorResponse = {
+        success: false,
+        error: "Missing rsvpStatus",
+      };
+      return NextResponse.json(errBody, { status: 400 });
+    }
+    if (
+      rawStatus !== RSVPStatus.confirmed &&
+      rawStatus !== RSVPStatus.pending &&
+      rawStatus !== RSVPStatus.canceled
+    ) {
+      const errBody: ApiErrorResponse = {
+        success: false,
+        error: "Invalid rsvpStatus",
+      };
+      return NextResponse.json(errBody, { status: 400 });
+    }
+    const status = rawStatus;
 
     if (ids.length === 0) {
       const okBody: EventsBulkResponse = {
@@ -63,7 +86,7 @@ export async function POST(req: Request) {
       return NextResponse.json(okBody, { status: 200 });
     }
 
-    // Case 2: other statuses or no status → fetch full and filter (or not) in the same query
+    // Case 2: pending/canceled → fetch full and filter in the same query
     const events = await prisma.event.findMany({
       where: { id: { in: ids } },
       include: {
@@ -79,8 +102,7 @@ export async function POST(req: Request) {
           },
         },
         rsvps: {
-          // if another status comes in (pending/canceled), filter here; otherwise, fetch all
-          where: status ? { status } : undefined,
+          where: { status },
           select: {
             id: true,
             createdAt: true,
@@ -88,6 +110,7 @@ export async function POST(req: Request) {
             userId: true,
             eventId: true,
             status: true,
+            attendanceEntitlementStatus: true,
             reminderPreferenceType: true,
             reminderOffsetMinutes: true,
             reminderScheduledAt: true,

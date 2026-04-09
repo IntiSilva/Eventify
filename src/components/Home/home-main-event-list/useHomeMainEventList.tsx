@@ -219,6 +219,8 @@ export function useHomeMainEventList(
   const urlLocation = params.get('location') || '';
   const urlCreator = params.get('creator') || '';
   const urlDate = params.get('date') || '';
+  const urlPaidParam = params.get('paid');
+  const urlPaid = urlPaidParam === 'paid' || urlPaidParam === 'free' ? urlPaidParam : 'all';
 
   const filters: SearchbarFilters = useMemo(
     () => ({
@@ -227,8 +229,9 @@ export function useHomeMainEventList(
       location: urlLocation,
       creator: urlCreator,
       date: urlDate,
+      paid: urlPaid,
     }),
-    [urlSearch, urlCategory, urlLocation, urlCreator, urlDate]
+    [urlSearch, urlCategory, urlLocation, urlCreator, urlDate, urlPaid]
   );
 
   const searchKey = useMemo(() => buildSearchKey(filters, viewerTz), [filters, viewerTz]);
@@ -243,7 +246,14 @@ export function useHomeMainEventList(
   }, [searchKey]);
 
   /* -------------------------- Exclusions (Upcoming) ------------------- */
-  const isAnyFilterActive = !!(urlSearch || urlCategory || urlLocation || urlCreator || urlDate);
+  const isAnyFilterActive = !!(
+    urlSearch ||
+    urlCategory ||
+    urlLocation ||
+    urlCreator ||
+    urlDate ||
+    urlPaid !== 'all'
+  );
 
   const { ids: visibleIds, meta: visibleMeta, hasPage: hasVisible } = useSearchPage(
     searchKey,

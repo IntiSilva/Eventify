@@ -1,6 +1,18 @@
 import type { Event, User, RSVP, UserRole } from "@/generated/prisma";
 
-export type UserProfileForAvatar = Pick<User, 'clerkId' | 'username' | 'firstName' | 'lastName' | 'imageUrl' | 'hasImage' | 'role'>;
+export type UserProfileForAvatar = Pick<
+  User,
+  'clerkId' | 'username' | 'firstName' | 'lastName' | 'imageUrl' | 'hasImage' | 'role'
+> &
+  Partial<
+    Pick<
+      User,
+      | 'stripeConnectAccountId'
+      | 'stripeConnectPayoutsEnabled'
+      | 'stripeConnectChargesEnabled'
+      | 'stripeConnectDetailsSubmitted'
+    >
+  >;
 
 export type EventWithCreatorAndRsvps = Event & {
     creator: UserProfileForAvatar;
@@ -9,7 +21,9 @@ export type EventWithCreatorAndRsvps = Event & {
          'reminderPreferenceType' |
          'reminderOffsetMinutes' |
          'reminderScheduledAt' |
-         'reminderSentAt'> & {user: UserProfileForAvatar } ) []
+         'reminderSentAt'> &
+         Partial<Pick<RSVP, 'attendanceEntitlementStatus'>> &
+         {user: UserProfileForAvatar } ) []
 }
 
 export type EditableEvent = Pick<
@@ -29,7 +43,9 @@ export type EditableEvent = Pick<
   | "isPaid"
   | "priceCents"
   | "currency"
->;
+> & {
+  creator?: UserProfileForAvatar | null;
+};
 
 
 

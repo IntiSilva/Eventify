@@ -19,7 +19,7 @@ function getSiteUrl() {
 const LOGO_URL = `${getSiteUrl()}/logo-eventify-png-2x.png`;
 
 
-export const Logo = ({ width = 120 }: { width?: number }) => (
+export const Logo = ({ width = 80 }: { width?: number }) => (
   <Section style={{ marginBottom: 24 }}>
     <Row>
       <Column align="center">
@@ -34,16 +34,27 @@ export const Logo = ({ width = 120 }: { width?: number }) => (
   </Section>
 );
 
-export const Title = ({ children }: { children: React.ReactNode }) => (
+export const Title = ({
+  children,
+  align = 'left',
+  size = 24,
+  style,
+}: {
+  children: React.ReactNode;
+  align?: 'left' | 'center';
+  size?: number;
+  style?: React.CSSProperties;
+}) => (
   <Heading
     style={{
       fontFamily: fonts.display,
       fontWeight: 700,
-      fontSize: 24,
-      lineHeight: "1.2",
-      textAlign: "left" as const,
-      margin: "0 0 12px 0",
+      fontSize: size,
+      lineHeight: '1.2',
+      textAlign: align,
+      margin: '0 0 12px 0',
       color: colors.fg,
+      ...style,
     }}
   >
     {children}

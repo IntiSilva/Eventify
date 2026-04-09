@@ -36,7 +36,8 @@ interface SubmitOnboardingResult {
 export async function submitOnboarding(
   usernameRaw: string,
   role: Extract<UserRole, 'user' | 'organizer'>,
-  phoneNumber?: string | null
+  phoneNumber?: string | null,
+  options?: { completeOnboarding?: boolean }
 ): Promise<SubmitOnboardingResult> {
   const { userId: clerkId } = await auth()
   if (!clerkId) {
@@ -90,14 +91,20 @@ export async function submitOnboarding(
 
   // --- 2) Persist to your DB (username + normalizedUsername + role + email + phone) ---
   try {
-    await prisma.user.update({
+    const profileData = {
+      username,
+      normalizedUsername: normalized,
+      role,
+      email,
+      phoneNumber: role === 'organizer' ? cleanedPhone : null,
+    }
+
+    await prisma.user.upsert({
       where: { clerkId },
-      data: {
-        username,
-        normalizedUsername: normalized,
-        role,
-        email,
-        phoneNumber: role === 'organizer' ? cleanedPhone : null,
+      update: profileData,
+      create: {
+        clerkId,
+        ...profileData,
       },
     })
   } catch (error: unknown) {
@@ -130,9 +137,37 @@ export async function submitOnboarding(
 
   // --- 3) Mark onboarding in Clerk public metadata (kept from your version) ---
   try {
-    await clerk.users.updateUserMetadata(clerkId, { publicMetadata: { role, onboarding: true } })
+    const publicMetadata =
+      options?.completeOnboarding === false
+        ? { role }
+        : { role, onboarding: true }
+
+    await clerk.users.updateUserMetadata(clerkId, { publicMetadata })
   } catch {
     // Non-fatal: continue
+  }
+
+  revalidatePath('/')
+  return { success: true, message: 'Profile updated successfully!' }
+}
+
+export async function completeOnboarding(
+  role: Extract<UserRole, 'user' | 'organizer'>
+): Promise<SubmitOnboardingResult> {
+  const { userId: clerkId } = await auth()
+  if (!clerkId) {
+    return { success: false, message: 'Unauthorized: User not found.' }
+  }
+
+  try {
+    await clerk.users.updateUserMetadata(clerkId, {
+      publicMetadata: { role, onboarding: true },
+    })
+  } catch {
+    return {
+      success: false,
+      error: { field: 'general', message: 'Failed to complete onboarding.' },
+    }
   }
 
   revalidatePath('/')

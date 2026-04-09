@@ -6,6 +6,7 @@ import { useViewerTz } from '@/contexts/ViewerTzContext';
 import ReminderQuickAction from '@/components/Agenda/ReminderQuickAction';
 import {
   motion,
+  AnimatePresence,
   useReducedMotion,
   useSpring,
   useTransform,
@@ -15,11 +16,18 @@ import {
 
 import InToHoverIcon from '@/components/LordIcons/InToHoverIcon';
 import { useMediaQuery } from '@/lib/hooks';
-import { InfoAnimatedIcon, InfoAnimatedIconHover } from '@/lib/icons';
+import {
+  CheckAnimatedIcon,
+  CheckAnimatedIconHover,
+  InfoAnimatedIcon,
+  InfoAnimatedIconHover,
+} from '@/lib/icons';
+import PaidTicketInfoPopover from '@/components/Payments/PaidTicketInfoPopover';
 
 // Read live event from store (keeps all row instances in sync)
 import { useEvent } from '@/contexts/EventsContext';
 import { cn } from '@/lib/utils';
+import { useViewerPaymentStatus } from '@/lib/payments/useViewerPaymentStatus';
 
 // Format as "YYYY-MM-DD · h:mm AM/PM" in viewer TZ
 function formatReminderNumeric(d: string | Date, tz?: string) {
@@ -96,6 +104,13 @@ function TiltedListEventRow({
   // Server gives only *my* RSVP in this page
   const myRsvp = live.rsvps?.[0] ?? null;
   const reminderScheduledAt = myRsvp?.reminderScheduledAt ?? null;
+  const [isPaidPopoverOpen, setIsPaidPopoverOpen] = useState(false);
+  const {
+    data: viewerPaymentStatus,
+    isLoading: isViewerPaymentStatusLoading,
+    isSignedIn,
+    ticketState,
+  } = useViewerPaymentStatus(live.id, Boolean(live.isPaid));
 
   /** Unified spring config */
   const SPR = {
@@ -154,6 +169,7 @@ function TiltedListEventRow({
 
   // Single press spring 0→1
   const press = useSpring(0, SPR.PRESS);
+  const paidPress = useSpring(0, SPR.PRESS);
 
   // Use negative Z for button press to sink inward
   const pressDepth = isDesktop ? 16 : 12;
@@ -164,11 +180,23 @@ function TiltedListEventRow({
   const rYPressMV = useTransform(press, (t) => -dirSign * (rotYBase * 0.5) * t);
   const rXPressMV = useTransform(press, (t) => -(1.5 + 2.0 * t));
 
+  const paidScaleMV = useTransform(paidPress, [0, 1], [1, 0.93]);
+  const zPaidPressMV = useTransform(paidPress, (t) => -pressDepth * t);
+  const xPaidPressMV = useTransform(paidPress, (t) => dirSign * (-pressDepth) * xPerZ * t);
+  const rYPaidPressMV = useTransform(paidPress, (t) => -dirSign * (rotYBase * 0.5) * t);
+  const rXPaidPressMV = useTransform(paidPress, (t) => -(1.5 + 2.0 * t));
+
   // TOTAL transform strings
   const btnTransform = useMotionTemplate`
     translateZ(${zActions}px) translateX(${xActions}px) rotateY(${rYActions}deg) rotateX(${rXActions}deg)
     translateZ(${zPressMV}px) translateX(${xPressMV}px) rotateY(${rYPressMV}deg) rotateX(${rXPressMV}deg)
     scale(${scaleMV})
+  `;
+
+  const paidBtnTransform = useMotionTemplate`
+    translateZ(${zActions}px) translateX(${xActions}px) rotateY(${rYActions}deg) rotateX(${rXActions}deg)
+    translateZ(${zPaidPressMV}px) translateX(${xPaidPressMV}px) rotateY(${rYPaidPressMV}deg) rotateX(${rXPaidPressMV}deg)
+    scale(${paidScaleMV})
   `;
 
   const titleTransform = useMotionTemplate`
@@ -227,6 +255,7 @@ function TiltedListEventRow({
 
   // Explicit hover for the icon (used by InToHoverIcon)
   const [detailsHovered, setDetailsHovered] = useState(false);
+  const [paidHovered, setPaidHovered] = useState(false);
   const setHover = useCallback((v: boolean) => {
     setDetailsHovered((prev) => (prev === v ? prev : v));
   }, []);
@@ -279,11 +308,110 @@ function TiltedListEventRow({
     }
   }, [press, onDetails, live]);
 
+  const handlePaidPointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    onRowInteract?.(live.id);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    paidPress.set(1);
+  }, [onRowInteract, live.id, paidPress]);
+
+  const handlePaidPointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    paidPress.set(0);
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }, [paidPress]);
+
+  const handlePaidPointerLeave = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    paidPress.set(0);
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+  }, [paidPress]);
+
+  const handlePaidPointerCancel = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    paidPress.set(0);
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+  }, [paidPress]);
+
+  const handlePaidKeyDown = useCallback((e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      paidPress.set(1);
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.currentTarget.click();
+    }
+  }, [paidPress]);
+
+  const handlePaidKeyUp = useCallback((e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      paidPress.set(0);
+      e.currentTarget.click();
+    }
+  }, [paidPress]);
+
   const reminderText = useMemo(() => {
     return reminderScheduledAt
       ? `Reminder scheduled for: ${formatReminderNumeric(reminderScheduledAt, viewerTz)}`
       : null;
   }, [reminderScheduledAt, viewerTz]);
+
+  const actionButtonShellClass =
+    "rounded-full border border-zinc-700 hover:border-zinc-500 transition-colors " +
+    "text-xs md:text-sm inline-flex items-center gap-2 py-1.5 " +
+    "select-none touch-manipulation transform-gpu will-change-transform";
+
+  const shouldShowPaidPill = Boolean(live.isPaid && ticketState === 'paid');
+
+  const paidPill = shouldShowPaidPill ? (
+    <PaidTicketInfoPopover
+      open={isPaidPopoverOpen}
+      onOpenChange={setIsPaidPopoverOpen}
+      paymentStatus={viewerPaymentStatus}
+      isLoading={Boolean(live.isPaid && isViewerPaymentStatusLoading)}
+      isSignedIn={isSignedIn}
+      side={isDesktop ? 'top' : 'left'}
+      align="end"
+      sideOffset={8}
+    >
+      <motion.button
+        type="button"
+        role="button"
+        className={cn(
+          actionButtonShellClass,
+          "px-3.5 md:px-4 w-full md:w-auto justify-center cursor-pointer",
+          "bg-emerald-950/20 text-emerald-300 border-emerald-900/60 hover:border-emerald-700/70"
+        )}
+        style={{ transformStyle: 'preserve-3d', transform: paidBtnTransform }}
+        onHoverStart={() => setPaidHovered(true)}
+        onHoverEnd={() => setPaidHovered(false)}
+        onPointerDown={handlePaidPointerDown}
+        onPointerUp={handlePaidPointerUp}
+        onPointerLeave={handlePaidPointerLeave}
+        onPointerCancel={handlePaidPointerCancel}
+        onKeyDown={handlePaidKeyDown}
+        onKeyUp={handlePaidKeyUp}
+        aria-label="Show paid ticket info"
+        title="Paid ticket info"
+      >
+        <span className="pointer-events-none">
+          <InToHoverIcon
+            inIcon={CheckAnimatedIcon}
+            hoverIcon={CheckAnimatedIconHover}
+            inColors={{ primary: '#6EE7B7' }}
+            hoverColors={{ primary: '#34D399' }}
+            resetTrigger={`${live.id}-paid`}
+            isParentHovered={paidHovered}
+            isDesktop={isDesktop}
+            size={isDesktop ? 18 : 15}
+            introDelay={220}
+          />
+        </span>
+        <span className="leading-none">Paid</span>
+      </motion.button>
+    </PaidTicketInfoPopover>
+  ) : null;
 
   const label = formatDate(live.date, undefined, {
     showYear: false,
@@ -295,7 +423,7 @@ function TiltedListEventRow({
     <article
       className={cn(
         'h-full flex flex-col justify-between relative',
-        'rounded-2xl bg-black/60 p-1.5 xs3:p-2 xs4:p-3 md:p-4',
+        'rounded-2xl bg-black/80 md:bg-black/60 p-1.5 xs3:p-2 xs4:p-3 md:p-4',
         !isSelected && 'border border-zinc-800/60 hover:shadow-[0_0_0_1px_rgba(16,185,129,0.15)] transition-shadow duration-200 ease-in',
         isSelected && [
           'border border-transparent',
@@ -359,7 +487,7 @@ function TiltedListEventRow({
 
             {/* Actions */}
             <motion.div
-              className="flex items-center gap-2 shrink-0 relative z-10"
+              className="flex flex-col items-end gap-1.5 md:gap-2 shrink-0 relative z-10"
               data-no-drag
               onPointerDown={(e) => e.stopPropagation()}
               onPointerMove={(e) => e.stopPropagation()}
@@ -370,54 +498,76 @@ function TiltedListEventRow({
                   : { transform: 'none', transformStyle: 'preserve-3d' }
               }
             >
-              {/* Details */}
-              <motion.button
-                type="button"
-                role="button"
-                className="px-2.5 md:px-3 py-1.5 rounded-full border border-zinc-700 hover:border-zinc-500
-                          transition-colors text-xs md:text-sm inline-flex items-center gap-2
-                          select-none touch-manipulation transform-gpu will-change-transform cursor-pointer"
-                style={{ transformStyle: 'preserve-3d', transform: btnTransform }}
-                onHoverStart={() => setHover(true)}
-                onHoverEnd={() => setHover(false)}
-                onPointerDown={handlePointerDown}
-                onPointerUp={handlePointerUp}
-                onPointerLeave={handlePointerLeave}
-                onPointerCancel={handlePointerCancel}
-                onKeyDown={handleKeyDown}
-                onKeyUp={handleKeyUp}
-                aria-label="Open details"
-                title="Details"
-              >
-                <span className="pointer-events-none">
-                  <InToHoverIcon
-                    inIcon={InfoAnimatedIcon}
-                    hoverIcon={InfoAnimatedIconHover}
-                    inColors={{ primary: '#E5E7EB' }}
-                    hoverColors={{ primary: '#E5E7EB' }}
-                    resetTrigger={live.id}
-                    isParentHovered={detailsHovered}
-                    isDesktop={isDesktop}
-                    size={isDesktop ? 18 : 15}
-                    introDelay={300}
-                  />
-                </span>
-              </motion.button>
+              <div className="flex w-full justify-end">
+                <div className="flex flex-col items-stretch gap-1.5 md:flex-row md:items-center md:gap-2">
+                  <AnimatePresence initial={false}>
+                    {paidPill ? (
+                      <motion.div
+                        key={`${live.id}-paid-pill`}
+                        initial={{ opacity: 0, y: 4, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 2, scale: 0.98 }}
+                        transition={{ duration: 0.18, ease: 'easeOut' }}
+                        className="order-2 w-full md:order-1 md:w-auto"
+                      >
+                        {paidPill}
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
 
-              {/* Reminder */}
-              <ReminderQuickAction
-                event={live}
-                myRsvp={myRsvp}
-                isDesktop={isDesktop}
-                baseZ={zActions}
-                baseX={xActions}
-                baseRotateX={rXActions}
-                baseRotateY={rYActions}
-                dirSign={dirSign}
-                xPerZ={xPerZ}
-                rotYBase={rotYBase}
-                onPressStart={() => onRowInteract?.(live.id)}
-              />
+                  <div className="order-1 flex items-center justify-end gap-2 md:order-2">
+                    {/* Details */}
+                    <motion.button
+                      type="button"
+                      role="button"
+                      className={cn(
+                        actionButtonShellClass,
+                        "px-2.5 md:px-3 cursor-pointer"
+                      )}
+                      style={{ transformStyle: 'preserve-3d', transform: btnTransform }}
+                      onHoverStart={() => setHover(true)}
+                      onHoverEnd={() => setHover(false)}
+                      onPointerDown={handlePointerDown}
+                      onPointerUp={handlePointerUp}
+                      onPointerLeave={handlePointerLeave}
+                      onPointerCancel={handlePointerCancel}
+                      onKeyDown={handleKeyDown}
+                      onKeyUp={handleKeyUp}
+                      aria-label="Open details"
+                      title="Details"
+                    >
+                      <span className="pointer-events-none">
+                        <InToHoverIcon
+                          inIcon={InfoAnimatedIcon}
+                          hoverIcon={InfoAnimatedIconHover}
+                          inColors={{ primary: '#E5E7EB' }}
+                          hoverColors={{ primary: '#E5E7EB' }}
+                          resetTrigger={live.id}
+                          isParentHovered={detailsHovered}
+                          isDesktop={isDesktop}
+                          size={isDesktop ? 18 : 15}
+                          introDelay={300}
+                        />
+                      </span>
+                    </motion.button>
+
+                    {/* Reminder */}
+                    <ReminderQuickAction
+                      event={live}
+                      myRsvp={myRsvp}
+                      isDesktop={isDesktop}
+                      baseZ={zActions}
+                      baseX={xActions}
+                      baseRotateX={rXActions}
+                      baseRotateY={rYActions}
+                      dirSign={dirSign}
+                      xPerZ={xPerZ}
+                      rotYBase={rotYBase}
+                      onPressStart={() => onRowInteract?.(live.id)}
+                    />
+                  </div>
+                </div>
+              </div>
             </motion.div>
           </div>
 

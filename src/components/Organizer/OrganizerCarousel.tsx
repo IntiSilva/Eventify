@@ -92,8 +92,8 @@ export default function OrganizerCarousel({
     patchEventEverywhere((() => {}) as unknown as GlobalMutate, updated);
   }, [upsertEvents]);
 
-  /** Delete from Menu → optimistic local filter + optional store cleanup. */
-  const handleEventDeleted = useCallback((id: string) => {
+  /** Archive from Menu → optimistic local filter + optional store cleanup. */
+  const handleEventArchived = useCallback((id: string) => {
     // 1) Optimistic local feedback: remove from this carousel instantly.
     setEvents((prev) => prev.filter((e) => e.id !== id));
     // 2) Optional store cleanup so the entity doesn't linger in other views.
@@ -105,9 +105,9 @@ export default function OrganizerCarousel({
     openMenu(event.id, {
       mode: 'editable',
       onEventUpdate: handleEventUpdate,
-      onEventDeleted: handleEventDeleted,
+      onEventArchived: handleEventArchived,
     });
-  }, [openMenu, handleEventUpdate, handleEventDeleted]);
+  }, [openMenu, handleEventUpdate, handleEventArchived]);
 
   /* ----------------------------------------------------------------------------- */
   /* NAV / IN-VIEW                                                                 */

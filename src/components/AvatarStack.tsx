@@ -1,7 +1,7 @@
 import type { ComponentProps } from 'react';
 import UserAvatar from './UserAvatar';
 import type { EventWithCreatorAndRsvps } from '@/types/event';
-import { RSVPStatus } from '@/generated/prisma';
+import { filterCurrentlyAttendingRsvps } from '@/lib/rsvpAttendance';
 import { cn } from '@/lib/utils';
 
 interface AvatarStackProps {
@@ -26,7 +26,7 @@ export default function AvatarStack({
   userAvatarProps,
 }: AvatarStackProps) {
   // Filter only confirmed attendees
-  const confirmedAttendees = rsvps.filter((rsvp) => rsvp.status === RSVPStatus.confirmed);
+  const confirmedAttendees = filterCurrentlyAttendingRsvps(rsvps);
 
   // If there are no confirmed attendees, render nothing (or you could show a placeholder)
   if (!confirmedAttendees.length) {

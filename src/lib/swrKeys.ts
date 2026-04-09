@@ -16,6 +16,11 @@ export const swrKeys = {
       `/api/agenda/upcoming-events${viewTz ? `?viewTz=${encodeURIComponent(viewTz)}` : ""}`,
   },
 
+  /* Viewer payments */
+  payments: {
+    myTickets: () => '/api/payments/my-tickets',
+  },
+
   /* Organizer (always the current user) */
   organizer: {
     list:     ()             => '/api/organizer/events',
@@ -78,6 +83,7 @@ export function buildSearchKey(filters: SearchbarFilters, viewTz?: string) {
   qs.set('location', filters.location ?? '');
   qs.set('creator',  filters.creator  ?? '');
   qs.set('date',     filters.date     ?? '');
+  qs.set('paid',     filters.paid     ?? 'all');
   if (viewTz) qs.set('viewTz', viewTz); // affects results, must be in the key
   return qs.toString(); // e.g. "search=&category=&...&date=2025-08-23&viewTz=America/…"
 }

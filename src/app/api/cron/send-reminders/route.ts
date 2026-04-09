@@ -5,7 +5,7 @@ import {
   TransactionalEmailsApiApiKeys,
 } from '@getbrevo/brevo';
 import { prisma } from '@/lib/prisma';
-import { RSVPStatus } from '@/generated/prisma';
+import { CURRENTLY_ATTENDING_RSVP_WHERE } from '@/lib/rsvpAttendance';
 import Reminder48hEmail from '@/app/(dashboard)/emails/Reminder48hEmail';
 import ReminderDayOfEmail from '@/app/(dashboard)/emails/ReminderDayOfEmail';
 import { getEventTimeContext } from '@/lib/reminders';
@@ -84,7 +84,7 @@ export async function GET(request: Request) {
       where: {
         reminderScheduledAt: { lte: now },
         reminderSentAt: null,
-        status: RSVPStatus.confirmed,
+        ...CURRENTLY_ATTENDING_RSVP_WHERE,
       },
       include: {
         user: { select: { email: true, username: true, firstName: true } },

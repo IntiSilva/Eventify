@@ -1,16 +1,17 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
 import { prisma } from '@/lib/prisma';
-import { EventCategory, RSVPStatus, Prisma } from '@/generated/prisma';
+import { EventCategory, Prisma } from '@/generated/prisma';
 import { startOfDay, startOfMonth, addDays, addMonths, endOfMonth } from 'date-fns';
 import { fromZonedTime, toZonedTime } from 'date-fns-tz';
+import { CURRENTLY_ATTENDING_RSVP_WHERE } from '@/lib/rsvpAttendance';
 import { normalizeStringForSearch, normalizeUsername, parseYyyyMmDdToKey, yyyymmddKey } from '@/lib/utils';
-import { deleteExpiredEvents } from '@/lib/cleanup';
 import { PAGE_SIZE_MAIN } from '@/lib/constants';
 import type { PaginatedApiResponse, ApiErrorResponse } from '@/types/api';
 import type { EventWithCreatorAndRsvps } from '@/types/event';
 
 /* ------------------------------------------------------------------ */
-/* Helpers — kept minimal and in your original style                   */
+/* Helpers — kept minimal               */
 /* ------------------------------------------------------------------ */
 
 function safeString(value: string | null): string | undefined {
@@ -23,6 +24,16 @@ function safeBoolean(value: string | null): boolean | undefined {
   if (v === 'true') return true;
   if (v === 'false') return false;
   return undefined;
+}
+
+type EventPaidFilterParam = 'all' | 'paid' | 'free';
+
+function safePaidFilter(value: string | null): EventPaidFilterParam {
+  if (!value) return 'all';
+  const v = value.toLowerCase();
+  if (v === 'paid') return 'paid';
+  if (v === 'free') return 'free';
+  return 'all';
 }
 
 function isValidEventCategory(categoryString: string | undefined): categoryString is EventCategory {
@@ -42,7 +53,14 @@ function csv(value: string | null): string[] {
 
 export async function GET(request: Request) {
   try {
-    await deleteExpiredEvents();
+    const { userId } = await auth();
+    if (!userId) {
+      const body: ApiErrorResponse = {
+        success: false,
+        error: 'Unauthorized',
+      };
+      return NextResponse.json(body, { status: 401 });
+    }
 
     const { searchParams } = new URL(request.url);
     console.log('[API - /api/events] Request URL:', request.url); // LOG A
@@ -56,6 +74,7 @@ export async function GET(request: Request) {
     const creatorParam   = safeString(searchParams.get('creator'));
     const dateParam      = safeString(searchParams.get('date'));      // "YYYY-MM-DD"
     const viewTzParam    = safeString(searchParams.get('viewTz'));    // IANA TZ (optional)
+    const paidParam      = safePaidFilter(searchParams.get('paid'));
 
     // Accept both `search` and `searchTerm` for compatibility
     const searchTitleParam =
@@ -74,6 +93,7 @@ export async function GET(request: Request) {
       categoryString,
       featuredParam,
       dateGroupParam,
+      paidParam,
       viewTzParam,
       excludeIdsParam,
     });
@@ -98,7 +118,9 @@ export async function GET(request: Request) {
     }
 
     /* -------------------- Build Prisma where clause -------------------- */
-    const whereClause: Prisma.EventWhereInput = {};
+    const whereClause: Prisma.EventWhereInput = {
+      archivedAt: null,
+    };
 
     // DATE FILTER:
     // - If client passes `date=YYYY-MM-DD`:
@@ -190,6 +212,12 @@ export async function GET(request: Request) {
       };
     }
 
+    if (paidParam === 'paid') {
+      whereClause.isPaid = true;
+    } else if (paidParam === 'free') {
+      whereClause.isPaid = false;
+    }
+
     console.log('API Params Received: ', {
       searchTerm: searchParams.get('searchTerm'),
       category:   searchParams.get('category'),
@@ -256,9 +284,10 @@ export async function GET(request: Request) {
           },
         },
         rsvps: {
-          where: { status: RSVPStatus.confirmed },
+          where: { ...CURRENTLY_ATTENDING_RSVP_WHERE },
           select: {
             status: true,
+            attendanceEntitlementStatus: true,
             reminderScheduledAt: true,
             reminderPreferenceType: true,
             user: {

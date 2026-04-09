@@ -11,15 +11,17 @@ import {
   removeFromAgendaUpcomingList,
   type AgendaListData,
 } from '@/lib/mutateHelpers';
-import { useMediaQuery, useGlobalScrollGuard } from '@/lib/hooks';
+import { useMediaQuery } from '@/lib/hooks';
 import Searchbar, { type SearchbarFilters } from '@/components/Searchbar/Searchbar';
 import { normalizeStringForSearch, normalizeUsername, cn } from '@/lib/utils';
-import AutoplayButton from './AutoplayButton';
+// import AutoplayButton from './AutoplayButton';
 import ScrollArrowButton from './ScrollArrowButton';
 import { ParticlesButton } from '../CommonButtons/ParticlesButton';
 import AnimatedIcon from '../LordIcons/AnimatedIcon';
 import { ViewAnimatedIcon } from '@/lib/icons';
 import { AGENDA_LIST_INFINITE } from '@/lib/constants';
+import PersonalAgendaSection from './personal-agenda/PersonalAgendaSection';
+import MyTicketsRail from './tickets-rail/MyTicketsRail';
 
 /* ──────────────────────────────────────────────────────────────────
    Types
@@ -40,11 +42,14 @@ type SearchIndexRow = {
   category: string;
   creator: string;
   dateYmd: string; // YYYY-MM-DD (local)
+  isPaid: boolean;
 };
 
 /* ──────────────────────────────────────────────────────────────────
    Component
    ────────────────────────────────────────────────────────────────── */
+
+// Autoplay is currently disabled, but the related code is left in place (mostly commented out) for easier future reactivation if desired.
 
 export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props) {
   const { open: openMenu } = useMenu();
@@ -57,8 +62,8 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
 
   /* State: view mode & autoplay prefs (rehydrated from localStorage) */
   const [viewMode, setViewMode] = useState<ViewMode>('tilt');
-  const [autoplayOn, setAutoplayOn] = useState<boolean>(true);
-  const [autoplayPauseUntil, setAutoplayPauseUntil] = useState<number>(0); // wrapper-driven soft pause
+  // const [autoplayOn, setAutoplayOn] = useState<boolean>(true);
+  // const [autoplayPauseUntil, setAutoplayPauseUntil] = useState<number>(0); // wrapper-driven soft pause
   const [autoplayBootstrapped, setAutoplayBootstrapped] = useState(false);
   const [bootReady, setBootReady] = useState(false); // defer list render until LS is read
 
@@ -70,8 +75,8 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
       const vm = localStorage.getItem('agenda:viewMode');
       if (vm === 'list' || vm === 'tilt') setViewMode(vm as ViewMode);
 
-      const ap = localStorage.getItem('agenda:autoplay');
-      if (ap != null) setAutoplayOn(!(ap === '0' || ap === 'false'));
+      // const ap = localStorage.getItem('agenda:autoplay');
+      // if (ap != null) setAutoplayOn(!(ap === '0' || ap === 'false'));
     } finally {
       setAutoplayBootstrapped(true);
       setBootReady(true);
@@ -93,6 +98,8 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
     if (f.location?.trim()) parts.push(`place "${f.location.trim()}"`);
     if (f.creator?.trim()) parts.push(`creator "${f.creator.trim()}"`);
     if (f.date?.trim()) parts.push(`date ${f.date.trim()}`);
+    if (f.paid === 'paid') parts.push('paid events');
+    if (f.paid === 'free') parts.push('free events');
     return parts.join(' · ');
   }
 
@@ -119,17 +126,15 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
   }, []);
 
   /* Refs & scroll toggles */
-  const heroRef = useRef<HTMLDivElement>(null);
+  const listControlsRef = useRef<HTMLDivElement>(null); // Searchbar + list controls
   const listRef = useRef<HTMLDivElement>(null);
-  useGlobalScrollGuard(listRef, { enabled: true, nativeScrollSelector: '[data-allow-scroll]' });
-
-  const controlsBlockRef = useRef<HTMLDivElement>(null); // Searchbar + pill
   const [aboveH, setAboveH] = useState(0); // height to subtract in "list" mode
   const NAVBAR_SCROLLED_PX = 52;
   const LIST_TOP_GAP_PX = 8; // space you want below the navbar
 
   const [showingList, setShowingList] = useState(false);
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  const [myTicketsOpen, setMyTicketsOpen] = useState(false);
 
   /* Breakpoints */
   const xs4Up = useMediaQuery('(min-width: 410px)');
@@ -164,34 +169,34 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
     } catch {}
   }, [viewMode]);
 
-  /* Toggle autoplay (persisted) */
-  const toggleAutoplay = useCallback(() => {
-     // If autoplay is not supported (finite list), ignore user clicks.
-    if (!autoplaySupported) return;
+  // /* Toggle autoplay (persisted) */
+  // const toggleAutoplay = useCallback(() => {
+  //    // If autoplay is not supported (finite list), ignore user clicks.
+  //   if (!autoplaySupported) return;
     
-    setAutoplayOn((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem('agenda:autoplay', next ? '1' : '0');
-      } catch {}
-      // If user turns PLAY on, clear any pending soft pause window
-      if (next) setAutoplayPauseUntil?.(0);
-      return next;
-    });
-  }, [autoplaySupported]);
+  //   setAutoplayOn((prev) => {
+  //     const next = !prev;
+  //     try {
+  //       localStorage.setItem('agenda:autoplay', next ? '1' : '0');
+  //     } catch {}
+  //     // If user turns PLAY on, clear any pending soft pause window
+  //     if (next) setAutoplayPauseUntil?.(0);
+  //     return next;
+  //   });
+  // }, [autoplaySupported]);
 
-  /* Soft pause (wrapper-controlled, does not touch persisted pref) */
-  const softPauseAutoplay = useCallback((ms: number = 7000) => {
-    if (pauseTimerRef.current) {
-      clearTimeout(pauseTimerRef.current);
-      pauseTimerRef.current = null;
-    }
-    setAutoplayPauseUntil(Date.now() + ms);
-    pauseTimerRef.current = window.setTimeout(() => {
-      setAutoplayPauseUntil(0); // resume if no other constraints
-      pauseTimerRef.current = null;
-    }, ms);
-  }, []);
+  // /* Soft pause (wrapper-controlled, does not touch persisted pref) */
+  // const softPauseAutoplay = useCallback((ms: number = 7000) => {
+  //   if (pauseTimerRef.current) {
+  //     clearTimeout(pauseTimerRef.current);
+  //     pauseTimerRef.current = null;
+  //   }
+  //   setAutoplayPauseUntil(Date.now() + ms);
+  //   pauseTimerRef.current = window.setTimeout(() => {
+  //     setAutoplayPauseUntil(0); // resume if no other constraints
+  //     pauseTimerRef.current = null;
+  //   }, ms);
+  // }, []);
 
   /* SWR: server provides data; no fetcher */
   const { data, mutate } = useSWR<AgendaListData>(swrKey, null, {
@@ -202,6 +207,10 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
 
   /* Events to render */
   const events = useMemo(() => data ?? initialEvents, [data, initialEvents]);
+  const eventsById = useMemo(() => {
+    return new Map(events.map((event) => [event.id, event] as const));
+  }, [events]);
+  const openableEventIds = useMemo(() => new Set<string>(eventsById.keys()), [eventsById]);
 
   /* Stable order mapping (1-based) */
   const baseOrderMap = useMemo(() => {
@@ -295,19 +304,51 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
     [openMenu, mutateReplaceEvent, mutateRemoveById]
   );
 
+  const handleOpenMyTickets = useCallback(() => {
+    setMyTicketsOpen(true);
+  }, []);
+
+  const handleOpenDetailsFromMyTickets = useCallback(
+    (eventId: string) => {
+      const event = eventsById.get(eventId);
+      if (!event) return;
+      setMyTicketsOpen(false);
+      handleDetails(event);
+    },
+    [eventsById, handleDetails]
+  );
+
   /* ───────────────────────── Scroll helpers & detector ───────────────────────── */
 
-  const [railShifted, setRailShifted] = useState(false);
+  // Scroll to the list-controls/searchbar anchor.
+  const scrollToListControls = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const listZoneTop =
+      listControlsRef.current?.getBoundingClientRect().top ??
+      listRef.current?.getBoundingClientRect().top ??
+      0;
+    const targetTop = window.scrollY + listZoneTop - (NAVBAR_SCROLLED_PX + LIST_TOP_GAP_PX);
+    window.scrollTo({ top: Math.max(0, targetTop), behavior });
+  }, [NAVBAR_SCROLLED_PX, LIST_TOP_GAP_PX]);
 
-  const SEAM_PX = 8;       // threshold to consider the list "visible"
-  const OVERSHOOT_PX = 24; // small positive overshoot to avoid edge flicker
+  // Scroll to the immersive list viewport (top of list surface under navbar).
+  const scrollToImmersiveList = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const rect = listRef.current?.getBoundingClientRect();
+    if (!rect) {
+      scrollToListControls(behavior);
+      return;
+    }
 
-  // Scroll to the list (land below the seam)
-  const scrollToList = useCallback(() => {
-    const listTop = listRef.current?.getBoundingClientRect().top ?? 0;
-    const top = window.scrollY + listTop + OVERSHOOT_PX;
-    window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-  }, []);
+    // Candidate A: keep the old semantic anchor (top aligned below navbar gap).
+    const controlsAlignedTop =
+      window.scrollY + rect.top - (NAVBAR_SCROLLED_PX + LIST_TOP_GAP_PX);
+
+    // Candidate B: fully occupy the viewport with the list surface (no avoidable
+    // residual downward document scroll after entering immersive tilt mode).
+    const immersiveFilledTop = window.scrollY + (rect.bottom - window.innerHeight);
+
+    const targetTop = Math.max(controlsAlignedTop, immersiveFilledTop);
+    window.scrollTo({ top: Math.max(0, targetTop), behavior });
+  }, [NAVBAR_SCROLLED_PX, LIST_TOP_GAP_PX, scrollToListControls]);
 
   // Scroll back to the hero
   const scrollToHero = useCallback(() => {
@@ -318,16 +359,28 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
   useEffect(() => {
     let raf = 0;
     const compute = () => {
-      if (effectiveViewMode === 'list') {
-        const base = NAVBAR_SCROLLED_PX + LIST_TOP_GAP_PX;
-        const ENTER = base + 10; // threshold to enter (scrolling down)
-        const LEAVE = base + 2;  // threshold to leave (scrolling up)
-        const t = controlsBlockRef.current?.getBoundingClientRect().top ?? 0;
-        setShowingList((prev) => (prev ? t <= LEAVE : t <= ENTER));
-      } else {
-        const heroBottom = heroRef.current?.getBoundingClientRect().bottom ?? 0;
-        setShowingList(heroBottom <= SEAM_PX);
-      }
+      // Entry/exit ownership is based on both:
+      // 1) controls anchor proximity
+      // 2) immersive list viewport occupancy
+      const anchorBase = NAVBAR_SCROLLED_PX + LIST_TOP_GAP_PX;
+      const ANCHOR_ENTER = anchorBase + 10;
+      const ANCHOR_LEAVE = anchorBase + 2;
+      const controlsTop =
+        listControlsRef.current?.getBoundingClientRect().top ??
+        Number.POSITIVE_INFINITY;
+      const listTop =
+        listRef.current?.getBoundingClientRect().top ??
+        Number.POSITIVE_INFINITY;
+      const immersiveCut = NAVBAR_SCROLLED_PX + LIST_TOP_GAP_PX + 6;
+      const controlsEntered = controlsTop <= ANCHOR_ENTER;
+      const controlsLeft = controlsTop > ANCHOR_LEAVE;
+      const immersiveOccupied = listTop <= immersiveCut;
+
+      setShowingList((prev) => {
+        if (immersiveOccupied) return true;
+        if (prev) return !controlsLeft;
+        return controlsEntered;
+      });
     };
     const onScroll = () => {
       if (raf) cancelAnimationFrame(raf);
@@ -362,24 +415,21 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
         scrollIdleTimerRef.current = null;
       }
     };
-  }, [effectiveViewMode, NAVBAR_SCROLLED_PX, LIST_TOP_GAP_PX, SEAM_PX]);
-
-  // Do not shift the rail in list mode
-  useEffect(() => {
-    if (effectiveViewMode === 'tilt') setRailShifted(showingList);
-  }, [showingList, effectiveViewMode]);
+  }, [NAVBAR_SCROLLED_PX, LIST_TOP_GAP_PX]);
 
   /* Scroll arrow control */
   const handleArrowClick = useCallback(() => {
     isClickAnimatingRef.current = true;
     if (showingList) {
-      if (effectiveViewMode === 'tilt') setRailShifted(false);
       scrollToHero();
     } else {
-      if (effectiveViewMode === 'tilt') setRailShifted(true);
-      scrollToList();
+      if (isDesktop && effectiveViewMode === 'tilt') {
+        scrollToImmersiveList();
+      } else {
+        scrollToListControls();
+      }
     }
-  }, [showingList, effectiveViewMode, scrollToHero, scrollToList]);
+  }, [showingList, scrollToHero, isDesktop, effectiveViewMode, scrollToImmersiveList, scrollToListControls]);
 
   /* ───────────────────────── Search ───────────────────────── */
 
@@ -401,6 +451,7 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
         category: normalizeStringForSearch(String(ev.category)),
         creator: normalizeUsername(ev.creator.username),
         dateYmd: toLocalYMD(new Date(ev.date)),
+        isPaid: ev.isPaid,
       };
     });
   }, [events]);
@@ -416,11 +467,12 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
     });
   }, [events]);
 
-  /** AND estricto: si un filtro está definido y no matchea, descarta la fila.
-   *  Devolvemos también un score (solo para ordenar dentro de los matches). */
+  /** Strict AND: If a filter is defined and there is no match, discard the row.
+  * We also return a score (only for sorting within matches). */
   function matchesAndScore(row: SearchIndexRow, f: SearchbarFilters): { ok: boolean; score: number } {
     let score = 0;
-    // search: alcanza con que aparezca en alguno (title/desc/creator/location)
+    
+    // search: it's enough that it appears in any (title/desc/creator/location)
     if (f.search && f.search.trim()) {
       const q = normalizeStringForSearch(f.search);
       const hitTitle = q && row.title.includes(q);
@@ -428,7 +480,7 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
       const hitCreator = q && row.creator.includes(q);
       const hitLoc = q && row.location.includes(q);
       if (!(hitTitle || hitDesc || hitCreator || hitLoc)) return { ok: false, score: 0 };
-      // ranking opcional
+      // optional ranking
       if (hitTitle)   score += 5;
       if (hitDesc)    score += 3;
       if (hitCreator) score += 2;
@@ -453,6 +505,9 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
       if (row.dateYmd !== f.date) return { ok: false, score: 0 };
       score += 2;
     }
+    if (f.paid === 'paid' && !row.isPaid) return { ok: false, score: 0 };
+    if (f.paid === 'free' && row.isPaid) return { ok: false, score: 0 };
+    if (f.paid === 'paid' || f.paid === 'free') score += 2;
     return { ok: true, score };
   }
 
@@ -464,7 +519,9 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
         !!n(filters.category) ||
         !!n(filters.location) ||
         !!n(filters.creator) ||
-        !!filters.date;
+        !!filters.date ||
+        filters.paid === 'paid' ||
+        filters.paid === 'free';
 
       if (!hasAny) {
         setSearchActive(false);
@@ -493,7 +550,6 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
       setMatchMap(m);
 
       if (!isDesktop) {
-        setRailShifted(false);
         scrollToHero();
       }
     },
@@ -505,19 +561,24 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
   const handleSwitchToTilt = useCallback(() => {
     // 1) clear selection before switching
     setSelectedRowId(null);
-    // 2) scroll to top and align rail
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    setRailShifted(false);
-    // 3) switch on the next frame (avoid running calculations mid-scroll)
-    setTimeout(() => setViewMode('tilt'), 200);
-  }, []);
+    // 2) keep context anchored to the list zone after mode dimensions settle
+    setViewMode('tilt');
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToListControls('smooth');
+      });
+    });
+  }, [scrollToListControls]);
 
   const handleSwitchToList = useCallback(() => {
     setSelectedRowId(null);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    setRailShifted(false);
-    setTimeout(() => setViewMode('list'), 200);
-  }, []);
+    setViewMode('list');
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToListControls('smooth');
+      });
+    });
+  }, [scrollToListControls]);
 
   /* ───────────────────────── Derived layout & autoplay ───────────────────────── */
 
@@ -546,33 +607,33 @@ export default function AgendaPageClientWrapper({ initialEvents, swrKey }: Props
   // Parallax only for desktop + tilt
   const parallaxEnabled = isDesktop && effectiveViewMode === 'tilt';
 
-  // Autoplay per mode (wrapper global gate is applied here)
-  const AUTOPLAY_TILT_PXPS = 40;
-  const AUTOPLAY_LIST_PXPS = 24;
+  // // Autoplay per mode (wrapper global gate is applied here)
+  // const AUTOPLAY_TILT_PXPS = 40;
+  // const AUTOPLAY_LIST_PXPS = 24;
 
-  const effectiveAutoplayPxPerSec = useMemo(() => {
-    // Hard gate: if the underlying list is finite, never drive autoplay.
-    if (!autoplaySupported) return 0;
-    if (!autoplayOn) return 0;
-    // Respect current soft-pause window
-    if (autoplayPauseUntil > Date.now()) return 0;
-    // Disable while searching or with a selection
-    if (searchActive || !!selectedRowId) return 0;
-    // Normal case: speed based on mode
-    return viewMode === 'tilt' ? AUTOPLAY_TILT_PXPS : AUTOPLAY_LIST_PXPS;
-  }, [autoplaySupported, autoplayOn, searchActive, selectedRowId, autoplayPauseUntil, viewMode]);
+  // const effectiveAutoplayPxPerSec = useMemo(() => {
+  //   // Hard gate: if the underlying list is finite, never drive autoplay.
+  //   if (!autoplaySupported) return 0;
+  //   if (!autoplayOn) return 0;
+  //   // Respect current soft-pause window
+  //   if (autoplayPauseUntil > Date.now()) return 0;
+  //   // Disable while searching or with a selection
+  //   if (searchActive || !!selectedRowId) return 0;
+  //   // Normal case: speed based on mode
+  //   return viewMode === 'tilt' ? AUTOPLAY_TILT_PXPS : AUTOPLAY_LIST_PXPS;
+  // }, [autoplaySupported, autoplayOn, searchActive, selectedRowId, autoplayPauseUntil, viewMode]);
 
 
   const pillVisible =
   bootReady && (viewMode === 'tilt' ? autoplayBootstrapped : true);
 
-  /* Measure controls block height (for list container height calc) */
+  /* Measure list-controls block height (for list container height calc) */
   useLayoutEffect(() => {
-    const block = controlsBlockRef.current;
+    const block = listControlsRef.current;
     if (!block) return;
     const h = Math.ceil(block.getBoundingClientRect().height);
     setAboveH(h);
-  }, [isDesktop]);
+  }, [isDesktop, viewMode, autoplaySupported, autoplayBootstrapped]);
 
   /* Clear selection if the selected item leaves the dataset */
   useEffect(() => {
@@ -655,119 +716,119 @@ if (!events.length) {
   return (
     <div className="relative w-full">
       {/* HERO */}
-      <div ref={heroRef} className="relative w-full min-h-[222px] xs4:min-h-[254px] md:min-h-[246px]">
+      <div className="relative w-full">
         <AnimatedText
           as="h1"
           title="My Agenda"
-          subtitle={`Upcoming: ${events.length}`}
           containerClassName="relative z-10"
           headingClassName="text-5xl xs4:text-6xl md:text-7xl font-semibold font-display text-start text-zinc-100 leading-none md:leading-normal tracking-widest"
-          subtitleClassName="mt-3 xs4:mt-4 md:mt-2 text-sm xs4:text-base md:text-lg text-start text-zinc-300 italic"
         />
+      </div>
 
-        <div ref={controlsBlockRef}>
-          {/* Searchbar */}
-          <div className="mt-3 md:mt-4 w-full md:w-[420px]">
-            <Searchbar
-              isScrolled={false}
+      <PersonalAgendaSection
+        events={events}
+        onOpenDetails={handleDetails}
+        onJumpToList={scrollToListControls}
+        onOpenMyTickets={handleOpenMyTickets}
+        className="mt-8 mb-4 md:mt-5 md:mb-5"
+      />
+
+      <MyTicketsRail
+        open={myTicketsOpen}
+        onOpenChange={setMyTicketsOpen}
+        openableEventIds={openableEventIds}
+        onViewEvent={handleOpenDetailsFromMyTickets}
+      />
+
+      {/* LIST CONTROLS */}
+      <div
+        ref={listControlsRef}
+        className="mb-3 md:mb-4 md:sticky md:top-[60px] md:z-30"
+      >
+        {/* Searchbar */}
+        <div className="w-full md:w-[420px]">
+          <Searchbar
+            isScrolled={false}
+            isDesktop={isDesktop}
+            isNarrowScreen={isNarrowScreen}
+            onSearchSubmit={handleUserSearch}
+            suggestionMode="local"
+            suggestionScope={{ type: 'agenda' }}
+            localSuggestionIndex={localSuggestionIndex}
+            notFoundOpen={notFoundOpen}
+            notFoundText={notFoundText}
+            onNotFoundClose={closeNotFound}
+          />
+        </div>
+
+        {/* List controls */}
+        <div className="mt-3 md:mt-4 flex items-center justify-end gap-2">
+          <div className="order-1 flex items-center gap-2">
+            {/* {autoplayBootstrapped && autoplaySupported && (
+              <AutoplayButton
+                isPlaying={autoplayOn}
+                onToggle={toggleAutoplay}
+                size={isDesktop ? 28 : 24}
+                colors={{ primary: '#E5E7EB' }}
+                className="h-8 w-8"
+                bootstrapped={autoplayBootstrapped}
+              />
+            )} */}
+
+            <ScrollArrowButton
+              desiredOrientation={orientationShown}
+              onClick={handleArrowClick}
               isDesktop={isDesktop}
-              isNarrowScreen={isNarrowScreen}
-              onSearchSubmit={handleUserSearch}
-              suggestionMode="local"
-              suggestionScope={{ type: 'agenda' }}
-              localSuggestionIndex={localSuggestionIndex}
-              notFoundOpen={notFoundOpen}
-              notFoundText={notFoundText}
-              onNotFoundClose={closeNotFound}
+              size={isDesktop ? 28 : 24}
+              inColors={{ primary: '#E5E7EB' }}
+              hoverColors={{ primary: '#E5E7EB' }}
+              actionColors={{ primary: '#E5E7EB' }}
+              ariaLabel={showingList ? 'View hero' : 'View full list'}
+              className="h-8 w-8"
+              onActionComplete={() => {
+                isClickAnimatingRef.current = false;
+                if (!isScrollingRef.current) {
+                  setOrientationShown(desiredOrientationRef.current);
+                }
+              }}
             />
           </div>
 
-          {/* Controls (List/Tilt) + rail anchored to the pill */}
-          <div className="mt-4 relative">
-            {/* Pill row; in LIST we also place the controls to the left */}
-            <div className="flex items-center justify-end gap-2">
-              {/* Single controls block that changes layout depending on the mode */}
-              <div
-                className={cn(
-                  effectiveViewMode === 'list'
-                    ? 'order-1 static flex items-center gap-2' // LIST: inline left of the pill
-                    : [
-                        // TILT: rail below the pill
-                        'order-1 absolute right-0 top-full mt-2 z-20',
-                        'flex flex-col items-end gap-2',
-                        'transition-transform duration-300 ease-in will-change-transform',
-                        railShifted ? 'translate-y-14 xl:translate-y-18' : 'translate-y-0',
-                      ]
-                )}
-              >
-                {/* Autoplay toggle (visible in both modes) */}
-                {autoplayBootstrapped && autoplaySupported && (
-                  <AutoplayButton
-                    isPlaying={autoplayOn}
-                    onToggle={toggleAutoplay}
-                    size={isDesktop ? 28 : 24}
-                    colors={{ primary: '#E5E7EB' }}
-                    className="h-8 w-8"
-                    bootstrapped={autoplayBootstrapped}
-                  />
-                )}
-
-                <ScrollArrowButton
-                  desiredOrientation={orientationShown}
-                  onClick={handleArrowClick}
-                  isDesktop={isDesktop}
-                  size={isDesktop ? 28 : 24}
-                  inColors={{ primary: '#E5E7EB' }}
-                  hoverColors={{ primary: '#E5E7EB' }}
-                  actionColors={{ primary: '#E5E7EB' }}
-                  ariaLabel={showingList ? 'View hero' : 'View full list'}
-                  className="h-8 w-8"
-                  onActionComplete={() => {
-                    isClickAnimatingRef.current = false;
-                    if (!isScrollingRef.current) {
-                      setOrientationShown(desiredOrientationRef.current);
-                    }
-                  }}
-                />
-              </div>
-
-              {/* Mode toggle pill */}
-              {isDesktop && (
-                  <div 
-                    className={cn(
-                      "order-2 inline-flex rounded-full border border-zinc-700 overflow-hidden",
-                      "motion-safe:transition-opacity motion-safe:duration-300 motion-safe:ease-in",
-                      pillVisible ? "opacity-100" : "opacity-0 pointer-events-none select-none"
-                    )}
-                    aria-hidden={!pillVisible}>
-                    <button
-                      type="button"
-                      onClick={handleSwitchToList}
-                      aria-pressed={viewMode === 'list'}
-                      className={`px-3 py-1.5 text-sm cursor-pointer ${
-                        viewMode === 'list'
-                          ? 'bg-zinc-800 text-zinc-100'
-                          : 'text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      List
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSwitchToTilt}
-                      aria-pressed={viewMode === 'tilt'}
-                      className={`px-3 py-1.5 text-sm cursor-pointer ${
-                        viewMode === 'tilt'
-                          ? 'bg-zinc-800 text-zinc-100'
-                          : 'text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      Tilt
-                    </button>
-                  </div>
+          {isDesktop && (
+            <div
+              className={cn(
+                'order-2 inline-flex rounded-full border border-zinc-700 overflow-hidden',
+                'motion-safe:transition-opacity motion-safe:duration-300 motion-safe:ease-in',
+                pillVisible ? 'opacity-100' : 'opacity-0 pointer-events-none select-none'
               )}
+              aria-hidden={!pillVisible}
+            >
+              <button
+                type="button"
+                onClick={handleSwitchToList}
+                aria-pressed={viewMode === 'list'}
+                className={`px-3 py-1.5 text-sm cursor-pointer ${
+                  viewMode === 'list'
+                    ? 'bg-zinc-800 text-zinc-100'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                List
+              </button>
+              <button
+                type="button"
+                onClick={handleSwitchToTilt}
+                aria-pressed={viewMode === 'tilt'}
+                className={`px-3 py-1.5 text-sm cursor-pointer ${
+                  viewMode === 'tilt'
+                    ? 'bg-zinc-800 text-zinc-100'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Tilt
+              </button>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
@@ -776,7 +837,7 @@ if (!events.length) {
         ref={listRef}
         className={cn(
           'relative w-[100vw] -mx-[calc((100vw-100%)/2)]',
-          'overflow-hidden -mb-6',
+          'overflow-visible -mb-6',
         )}
       >
         {bootReady ? (
@@ -797,24 +858,29 @@ if (!events.length) {
             tiltDirection="left"
             tiltAmountDeg={effectiveViewMode === 'tilt' ? tiltDeg : 0}
             tiltShiftX={effectiveViewMode === 'tilt' ? tiltShiftX : 0}
-            /* Autoplay only in Tilt */
-            autoplayPxPerSec={effectiveAutoplayPxPerSec}
-            autoplayDirection="up"
-            pauseOnHover
-            onPauseAutoplay={() => softPauseAutoplay(3000)}
+            /* Autoplay deactivated for now */
+            // autoplayPxPerSec={effectiveAutoplayPxPerSec}
+            // autoplayDirection="up"
+            // pauseOnHover
+            // onPauseAutoplay={() => softPauseAutoplay(3000)}
             selectedRowId={selectedRowId}
             onSelectRow={setSelectedRowId}
             getRowClassName={getRowClassName}
             searchActive={searchActive}
             searchFocusIds={searchFocusIds}
             maxRenderCount={maxRenderCount}
-            initialPeekRatio={effectiveViewMode === 'list' ? -0.075 : 0.35}
+            initialPeekRatio={
+              effectiveViewMode === 'list'
+                ? (isDesktop ? -0.14 : -0.2)
+                : 0.35
+            }
             showOrderNumbers={!searchActive}
             getOrderNumber={getOrderNumber}
             wheelFeel="buttery"
             wheelFeelOverride={{ gain: 0.7 }}
             parallaxEnabled={parallaxEnabled}
             infinite={infinite}
+            allowWheelPageEdgeRelease={effectiveViewMode === 'list'}
 
           />
         ) : (

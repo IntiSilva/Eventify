@@ -80,14 +80,15 @@ describe('query string builders', () => {
       search: 'music',
       date: '2025-03-01',
       category: 'concert',
+      paid: 'paid' as const,
     };
     const snapshot = { ...filters };
 
     const qs = buildEventsQS(filters, 'America/New_York');
 
-    // Your utils format order: search, category, location, creator, date, viewTz
+    // Your utils format order: search, category, location, creator, date, paid, viewTz
     expect(qs).toBe(
-      'search=music&category=concert&location=NYC&creator=alice&date=2025-03-01&viewTz=America%2FNew_York',
+      'search=music&category=concert&location=NYC&creator=alice&date=2025-03-01&paid=paid&viewTz=America%2FNew_York',
     );
     // Must not mutate input
     expect(filters).toEqual(snapshot);
@@ -95,7 +96,7 @@ describe('query string builders', () => {
 
   it('omits empty/undefined filters in events QS', () => {
     // Only location is set; search is empty string; creator is undefined; no viewTz
-    const qs = buildEventsQS({ search: '', creator: undefined, location: 'LA' }, undefined);
+    const qs = buildEventsQS({ search: '', creator: undefined, location: 'LA', paid: 'all' }, undefined);
     expect(qs).toBe('location=LA'); // No "search=", no "viewTz"
   });
 
@@ -122,11 +123,12 @@ describe('query string builders', () => {
         location: 'NYC',
         search: 'music',
         category: 'concert',
+        paid: 'free',
       },
     });
 
-    // Your utils format order: page, limit, search, category, location, date
-    expect(qs).toBe('page=2&limit=25&search=music&category=concert&location=NYC&date=2025-03-01');
+    // Your utils format order: page, limit, search, category, location, date, paid
+    expect(qs).toBe('page=2&limit=25&search=music&category=concert&location=NYC&date=2025-03-01&paid=free');
   });
 
   it('organizer QS ignores creator filter (document current behavior)', () => {
@@ -150,10 +152,11 @@ describe('query string builders', () => {
         search: 'music',
         category: 'concert',
         date: '2025-03-01',
+        paid: 'paid',
       },
     });
 
-    // Your utils format order: page, limit, search, category, location, date
-    expect(qs).toBe('page=3&limit=50&search=music&category=concert&location=NYC&date=2025-03-01');
+    // Your utils format order: page, limit, search, category, location, date, paid
+    expect(qs).toBe('page=3&limit=50&search=music&category=concert&location=NYC&date=2025-03-01&paid=paid');
   });
 });

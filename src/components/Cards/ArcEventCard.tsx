@@ -18,10 +18,10 @@ import {
 
 import { useMediaQuery } from '@/lib/hooks';
 import { getBadgeState, capitalizeFirstLetter, getCategoryBadgeColors, cn } from '@/lib/utils';
+import { filterCurrentlyAttendingRsvps } from '@/lib/rsvpAttendance';
 import { useViewerTz } from '@/contexts/ViewerTzContext';
 
 import type { EventWithCreatorAndRsvps } from '@/types/event';
-import { RSVPStatus } from '@/generated/prisma';
 
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '../ui/badge';
@@ -251,7 +251,7 @@ function ArcEventCard({
   const badgeState = useMemo(() => getBadgeState(event), [event]);
 
   const confirmedAttendeeCount = useMemo(
-    () => event.rsvps.filter((r) => r.status === RSVPStatus.confirmed).length,
+    () => filterCurrentlyAttendingRsvps(event.rsvps).length,
     [event.rsvps],
   );
 
@@ -796,7 +796,12 @@ function ArcEventCard({
 
                 {/* Top-right badges stack: category (left) is separate; pricing sits on right stacked under category-level overlay */}
                 <div className="absolute z-20 right-1.5 -top-3.5 md:-top-3 flex flex-col items-end gap-1">
-                  <PricingBadge isPaid={Boolean(event.isPaid)} variant={isList ? 'list' : 'carousel'} className="max-w-[6.5rem]" />
+                  <PricingBadge
+                    isPaid={Boolean(event.isPaid)}
+                    eventStart={event.date}
+                    variant={isList ? 'list' : 'carousel'}
+                    className="max-w-[6.5rem]"
+                  />
                 </div>
 
               {/* Featured/Admin badges */}

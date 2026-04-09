@@ -66,7 +66,10 @@ describe('GET /api/search-suggestions', () => {
 
     expect(res.status).toBe(200);
     expect(eventFindMany).toHaveBeenCalledWith({
-      where: { normalizedTitle: { contains: normalized } },
+      where: {
+        archivedAt: null,
+        normalizedTitle: { contains: normalized },
+      },
       distinct: ['title'],
       orderBy: { title: 'asc' },
       take: SUGGESTION_LIMIT,
@@ -87,7 +90,7 @@ describe('GET /api/search-suggestions', () => {
     expect(userFindMany).toHaveBeenCalledWith({
       where: {
         normalizedUsername: { contains: normalizeUsername('Jo') },
-        createdEvents: { some: {} },
+        createdEvents: { some: { archivedAt: null } },
       },
       orderBy: { username: 'asc' },
       take: SUGGESTION_LIMIT,
@@ -97,7 +100,97 @@ describe('GET /api/search-suggestions', () => {
     expect(body).toEqual({ success: true, data: ['john'] });
   });
 
+  it('returns 400 when "scope" is invalid and does not hit DB', async () => {
+    const req = buildRequest({
+      field: 'title',
+      query: 'Expo',
+      scope: 'invalid_scope',
+    });
+    const res = await GET(req);
+    const body = await res.json() as SearchSuggestionsResponse;
+
+    expect(res.status).toBe(400);
+    expect(body).toEqual({
+      success: false,
+      error: 'Invalid "scope" param',
+    });
+    expect(eventFindMany).not.toHaveBeenCalled();
+    expect(userFindMany).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 when non-admin user requests scope=admin', async () => {
+    mockAuth.mockResolvedValue({
+      userId: 'user_1',
+      sessionClaims: {
+        publicMetadata: { role: 'organizer' },
+      },
+    });
+
+    const req = buildRequest({
+      field: 'title',
+      query: 'Expo',
+      scope: 'admin',
+      userId: 'admin_target_1',
+    });
+    const res = await GET(req);
+    const body = await res.json() as SearchSuggestionsResponse;
+
+    expect(res.status).toBe(403);
+    expect(body).toEqual({
+      success: false,
+      error: 'Forbidden',
+    });
+    expect(eventFindMany).not.toHaveBeenCalled();
+    expect(userFindMany).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 when unauthenticated user requests scope=organizer', async () => {
+    mockAuth.mockResolvedValue({});
+
+    const req = buildRequest({
+      field: 'title',
+      query: 'Expo',
+      scope: 'organizer',
+    });
+    const res = await GET(req);
+    const body = await res.json() as SearchSuggestionsResponse;
+
+    expect(res.status).toBe(401);
+    expect(body).toEqual({
+      success: false,
+      error: 'Unauthorized',
+    });
+    expect(eventFindMany).not.toHaveBeenCalled();
+    expect(userFindMany).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 when unauthenticated user requests scope=agenda', async () => {
+    mockAuth.mockResolvedValue({});
+
+    const req = buildRequest({
+      field: 'title',
+      query: 'Expo',
+      scope: 'agenda',
+    });
+    const res = await GET(req);
+    const body = await res.json() as SearchSuggestionsResponse;
+
+    expect(res.status).toBe(401);
+    expect(body).toEqual({
+      success: false,
+      error: 'Unauthorized',
+    });
+    expect(eventFindMany).not.toHaveBeenCalled();
+    expect(userFindMany).not.toHaveBeenCalled();
+  });
+
   it('applies admin scope by filtering events by provided userId', async () => {
+    mockAuth.mockResolvedValue({
+      userId: 'admin_1',
+      sessionClaims: {
+        publicMetadata: { role: 'admin' },
+      },
+    });
     const normalized = normalizeStringForSearch('Expo');
     eventFindMany.mockResolvedValue([{ title: 'Expo 2025' }]);
 
@@ -114,6 +207,7 @@ describe('GET /api/search-suggestions', () => {
     expect(eventFindMany).toHaveBeenCalledWith({
       where: {
         createdBy: 'admin_target_1',
+        archivedAt: null,
         normalizedTitle: { contains: normalized },
       },
       distinct: ['title'],
@@ -125,9 +219,13 @@ describe('GET /api/search-suggestions', () => {
     expect(body).toEqual({ success: true, data: ['Expo 2025'] });
   });
 
-  it('admin scope without userId does not apply createdBy filter (current behavior)', async () => {
-    const normalized = normalizeStringForSearch('Expo');
-    eventFindMany.mockResolvedValue([{ title: 'Expo Wide' }]);
+  it('returns 400 when scope=admin is missing required userId param', async () => {
+    mockAuth.mockResolvedValue({
+      userId: 'admin_1',
+      sessionClaims: {
+        publicMetadata: { role: 'admin' },
+      },
+    });
 
     const req = buildRequest({
       field: 'title',
@@ -137,16 +235,13 @@ describe('GET /api/search-suggestions', () => {
     const res = await GET(req);
     const body = await res.json() as SearchSuggestionsResponse;
 
-    expect(res.status).toBe(200);
-    expect(eventFindMany).toHaveBeenCalledWith({
-      where: { normalizedTitle: { contains: normalized } },
-      distinct: ['title'],
-      orderBy: { title: 'asc' },
-      take: SUGGESTION_LIMIT,
-      select: { title: true },
+    expect(res.status).toBe(400);
+    expect(body).toEqual({
+      success: false,
+      error: 'Missing "userId" param for admin scope',
     });
-
-    expect(body).toEqual({ success: true, data: ['Expo Wide'] });
+    expect(eventFindMany).not.toHaveBeenCalled();
+    expect(userFindMany).not.toHaveBeenCalled();
   });
 
   it('applies agenda scope for title (confirmed RSVPs of the current user)', async () => {
@@ -166,7 +261,14 @@ describe('GET /api/search-suggestions', () => {
     expect(res.status).toBe(200);
     expect(eventFindMany).toHaveBeenCalledWith({
       where: {
-        rsvps: { some: { userId: 'clerk_777', status: 'confirmed' } },
+        archivedAt: null,
+        rsvps: {
+          some: {
+            userId: 'clerk_777',
+            status: 'confirmed',
+            attendanceEntitlementStatus: 'active',
+          },
+        },
         normalizedTitle: { contains: normalized },
       },
       distinct: ['title'],
@@ -196,7 +298,14 @@ describe('GET /api/search-suggestions', () => {
         normalizedUsername: { contains: normalizeUsername('Ma') },
         createdEvents: {
           some: {
-            rsvps: { some: { userId: 'clerk_888', status: 'confirmed' } },
+            archivedAt: null,
+            rsvps: {
+              some: {
+                userId: 'clerk_888',
+                status: 'confirmed',
+                attendanceEntitlementStatus: 'active',
+              },
+            },
           },
         },
       },
@@ -220,7 +329,10 @@ describe('GET /api/search-suggestions', () => {
     expect(body).toEqual({ success: false, error: 'Failed to fetch suggestions' });
 
     expect(eventFindMany).toHaveBeenCalledWith({
-      where: { normalizedTitle: { contains: normalized } },
+      where: {
+        archivedAt: null,
+        normalizedTitle: { contains: normalized },
+      },
       distinct: ['title'],
       orderBy: { title: 'asc' },
       take: SUGGESTION_LIMIT,

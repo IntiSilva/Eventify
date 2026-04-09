@@ -109,6 +109,13 @@ const RippleGridBackground: React.FC<Props> = ({
   // Fade-in state for static image
   const [imageLoaded, setImageLoaded] = useState(false);
 
+  const [hasMounted, setHasMounted] = useState(false)
+  useEffect(() => {
+    const run = () => setHasMounted(true)
+    if (typeof queueMicrotask === 'function') queueMicrotask(run)
+    else Promise.resolve().then(run)
+  }, [])
+
   /*
    * Compute the effective values in ONE place (desktop value, overridden by mobile when applicable).
    * This removes the need for a dozen tiny effects and fixes the exhaustive-deps warnings about `pick`.
@@ -456,11 +463,8 @@ const RippleGridBackground: React.FC<Props> = ({
   }, [effStatic]);
 
    return (
-    <div
-      ref={containerRef}
-      className="w-full h-full bg-black relative overflow-hidden pointer-events-none [&_canvas]:block"
-    >
-      {useStaticImage && (
+    <div ref={containerRef} className="w-full h-full bg-black relative overflow-hidden pointer-events-none [&_canvas]:block">
+      {hasMounted && useStaticImage && (
         <Image
           src={staticImageSrc}
           alt=""
@@ -468,14 +472,13 @@ const RippleGridBackground: React.FC<Props> = ({
           priority
           sizes="100vw"
           onLoadingComplete={() => setImageLoaded(true)}
-          className={
-            'object-cover transition-opacity duration-400 ease-in' +
-            (imageLoaded ? 'opacity-100' : 'opacity-0')
-          }
+          className={`object-cover transition-opacity duration-400 ease-in ${
+            imageLoaded ? "opacity-100" : "opacity-0"
+          }`}
         />
       )}
     </div>
-  );
+  )
 };
 
 export default RippleGridBackground;

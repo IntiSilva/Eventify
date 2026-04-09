@@ -6,13 +6,19 @@ import { useSWRConfig } from 'swr';
 import { revalidateEventLists } from '@/lib/mutateHelpers';
 import { motion, type Variants } from 'motion/react'
 import { useRouter } from 'next/navigation'
-import { createEvent, type CreateEventResult, type EventFormSerialized } from '@/app/(dashboard)/events/actions'
+import {
+  createEvent,
+  getEventPricingPreview,
+  type CreateEventResult,
+  type EventPricingPreviewData,
+} from '@/app/(dashboard)/events/actions'
+import type { EventFormSerialized } from '@/types/eventPayloads'
 import { useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { createEventSchema, type CreateEventValues } from '@/schemas/events'
 import { toast } from 'sonner'
 
-import { cn, capitalizeFirstLetter, canonicalizeTimeZone, pickerDateToUtc } from '@/lib/utils'
+import { cn, capitalizeFirstLetter, canonicalizeTimeZone, pickerDateToUtc, formatPrice } from '@/lib/utils'
 import { useViewerTz } from '@/contexts/ViewerTzContext'
 import { applyZodErrorsToForm, toFormError } from '@/lib/formErrors'
 import { Input } from '@/components/ui/input'
@@ -30,6 +36,7 @@ import ContactPhoneMethodSelector, { type ContactPhoneApps } from '@/components/
 import { CollapseMotion } from '@/components/FormsRelated/CollapseMotion'
 import AnimatedCharactersCounter from '@/components/AnimatedText/AnimatedCharactersCounter'
 import DashboardPageWrapper from '@/components/DashboardPageWrapper'
+import { PaidEventPricingTooltip } from '@/components/InfoTooltip'
 
 import { EventCategory } from '@/generated/prisma'
 import { useUser } from '@clerk/nextjs'
@@ -56,17 +63,30 @@ function AnimatedFormSection({ children }: { children: React.ReactNode }) {
   return <motion.div variants={itemVariants} layout>{children}</motion.div>
 }
 
-type Props = {
-  profilePhoneNumber: string | null
+function parsePriceAmountToCents(priceAmount: string | undefined, exponent: number): number | null {
+  const raw = (priceAmount ?? '').trim()
+  const parsed = raw ? Number(raw) : Number.NaN
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return exponent === 0 ? Math.round(parsed) : Math.round(parsed * 100)
 }
 
-export default function CreateEventForm({ profilePhoneNumber }: Props) {
+type Props = {
+  profilePhoneNumber: string | null
+  requireStripeConnectForPaidEvents?: boolean
+}
+
+export default function CreateEventForm({
+  profilePhoneNumber,
+  requireStripeConnectForPaidEvents = false,
+}: Props) {
   const [isPending, startTransition] = useTransition()
   const router = useRouter()
   const { user: clerkUser } = useUser()
   const { viewerTz } = useViewerTz()
   const { mutate } = useSWRConfig()
   const [selectedCurrency, setSelectedCurrency] = useState<Currency | null>(null);
+  const [pricingPreview, setPricingPreview] = useState<EventPricingPreviewData | null>(null)
+  const [pricingPreviewLoading, setPricingPreviewLoading] = useState(false)
   const isE2E = process.env.NEXT_PUBLIC_E2E === '1';
 
 
@@ -131,14 +151,23 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
     useProfilePhoneValue,
     isPaidValue,
     currencyValue,
+    priceAmountValue,
   ] = useWatch({
     control: form.control,
-    name: ['title', 'description', 'location', 'useProfilePhone', 'isPaid', 'currency'],
+    name: ['title', 'description', 'location', 'useProfilePhone', 'isPaid', 'currency', 'priceAmount'],
   })
   
   const currencyCode = (currencyValue ?? '').toUpperCase()
   const isZeroDecimal = currencyCode === 'JPY' || currencyCode === 'CLP'
   const exponent = isZeroDecimal ? 0 : 2
+  const viewerRole = clerkUser?.publicMetadata?.role
+  const pricingPreviewMode =
+    viewerRole === 'organizer'
+      ? 'organizer'
+      : viewerRole === 'admin'
+        ? 'admin'
+        : null
+  const shouldShowPricingPreview = pricingPreviewMode !== null
 
   // The PhoneInput leaves an empty string ("") when there is no valid number
   const phoneE164 = useWatch({ control: form.control, name: 'contactPhone' }) ?? ''
@@ -182,6 +211,59 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
       form.setValue('eventTimeZone', viewerTz, { shouldValidate: true })
     }
   }, [viewerTz, form])
+
+  useEffect(() => {
+    const normalizedCurrency = (currencyValue ?? '').trim().toUpperCase()
+    const parsedPriceCents = parsePriceAmountToCents(priceAmountValue ?? '', exponent)
+
+    if (
+      !pricingPreviewMode ||
+      !isPaidValue ||
+      !parsedPriceCents ||
+      normalizedCurrency.length !== 3
+    ) {
+      setPricingPreview(null)
+      setPricingPreviewLoading(false)
+      return
+    }
+
+    let canceled = false
+    setPricingPreviewLoading(true)
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await getEventPricingPreview({
+            isPaid: true,
+            priceCents: parsedPriceCents,
+            currency: normalizedCurrency,
+            previewMode: pricingPreviewMode,
+          })
+          if (canceled) return
+          setPricingPreview(result.success ? result.data : null)
+        } catch {
+          if (!canceled) {
+            setPricingPreview(null)
+          }
+        } finally {
+          if (!canceled) {
+            setPricingPreviewLoading(false)
+          }
+        }
+      })()
+    }, 250)
+
+    return () => {
+      canceled = true
+      window.clearTimeout(timer)
+    }
+  }, [
+    currencyValue,
+    exponent,
+    isPaidValue,
+    priceAmountValue,
+    pricingPreviewMode,
+  ])
 
   // Submit handler
   const onSubmit = (values: CreateEventValues) => {
@@ -396,7 +478,10 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
                 render={({ field }) => (
                   <FormItem className="flex flex-row items-center justify-between rounded-md border p-3 xs3:p-4 shadow bg-black border-zinc-700">
                     <div className="space-y-1.5">
-                      <FormLabel className="text-white font-heading">Paid event</FormLabel>
+                      <div className="flex items-center gap-2">
+                        <FormLabel className="text-white font-heading">Paid event</FormLabel>
+                        <PaidEventPricingTooltip where="create" />
+                      </div>
                       <p className=" text-2xs md:text-xs text-zinc-400">Users pay a ticket to attend</p>
                     </div>
                     {/* Right side: Powered by Stripe + Switch */}
@@ -434,6 +519,7 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
                         <Switch
                           checked={field.value}
                           onCheckedChange={field.onChange}
+                          disabled={requireStripeConnectForPaidEvents}
                           className="data-[state=unchecked]:bg-zinc-900 data-[state=checked]:bg-emerald-600 cursor-pointer"
                         />
                       </FormControl>
@@ -441,6 +527,11 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
                   </FormItem>
                 )}
               />
+              {requireStripeConnectForPaidEvents && (
+                <p className="mt-2 text-xs text-amber-300">
+                  Stripe Connect is not fully enabled yet. Open the profile menu in the Navbar and go to Payments, then complete account details and enable charges and payouts before creating paid events.
+                </p>
+              )}
             </AnimatedFormSection>
 
             {/* Price & currency (when paid) */}
@@ -511,6 +602,58 @@ export default function CreateEventForm({ profilePhoneNumber }: Props) {
                 <div className="text-[0.8rem] font-medium text-destructive">
                   {form.formState.errors.currency?.message && <p>{form.formState.errors.currency.message}</p>}
                   {form.formState.errors.priceAmount?.message && <p>{form.formState.errors.priceAmount.message}</p>}
+                </div>
+              )}
+
+              {shouldShowPricingPreview && (
+                <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/30 p-3">
+                  <p className="text-xs uppercase tracking-wide text-zinc-500">Pricing Preview</p>
+
+                  {pricingPreviewLoading ? (
+                    <p className="mt-2 text-xs text-zinc-400">Updating preview...</p>
+                  ) : pricingPreview ? (
+                    <div className="mt-2 space-y-1.5 text-sm">
+                      <div className="flex items-center justify-between text-zinc-300">
+                        <span>Ticket price</span>
+                        <span className="text-white">
+                          {formatPrice(pricingPreview.exact.ticketAmountCents, pricingPreview.currency)}
+                        </span>
+                      </div>
+                      {pricingPreview.previewMode === 'organizer' && (
+                        <div className="flex items-center justify-between text-zinc-300">
+                          <span>Platform fee</span>
+                          <span className="text-white">
+                            {formatPrice(pricingPreview.exact.platformFeeAmountCents, pricingPreview.currency)}
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between text-zinc-300">
+                        <span>Estimated Stripe fee</span>
+                        <span>
+                          {formatPrice(pricingPreview.estimated.stripeFeeAmountCents, pricingPreview.currency)}
+                        </span>
+                      </div>
+                      <div className="h-px bg-zinc-800" />
+                      <div className="flex items-center justify-between font-medium text-emerald-300">
+                        <span>
+                          {pricingPreview.previewMode === 'organizer'
+                            ? 'Estimated organizer net'
+                            : 'Estimated final net'}
+                        </span>
+                        <span>
+                          {formatPrice(pricingPreview.estimated.finalNetAmountCents, pricingPreview.currency)}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-zinc-400">
+                      Enter a valid paid ticket price to preview your estimated payout.
+                    </p>
+                  )}
+
+                  <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+                    Estimated fields may vary from final Stripe settlement values.
+                  </p>
                 </div>
               )}
             </div>

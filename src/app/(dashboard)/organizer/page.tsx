@@ -1,6 +1,13 @@
 import type { Metadata } from 'next'
 import { getCurrentUserFromDb } from "@/lib/viewer";
-import { getEventsByOrganizer, getPopularEventsByOrganizer, getMonthlyEventsByOrganizer, getUserUpcomingRsvpCount } from "@/lib/data";
+import {
+  getEventsByOrganizer,
+  getPopularEventsByOrganizer,
+  getMonthlyEventsByOrganizer,
+  getOrganizerOverviewSnapshot,
+  getOrganizerOverviewTimeSeriesSnapshot,
+  getUserUpcomingRsvpCount,
+} from "@/lib/data";
 import OrganizerPageClientWrapper from "@/components/Organizer/OrganizerPageClientWrapper";
 import { AuroraButton } from "@/components/CommonButtons/AuroraButton";
 import { ParticlesButton } from '@/components/CommonButtons/ParticlesButton';
@@ -8,6 +15,11 @@ import Link from "next/link";
 import DashboardPageWrapper from "@/components/DashboardPageWrapper";
 import type { SearchParamsPromise, RawSearchParams } from "@/types/globals";
 import RippleGridBackground from "@/components/AnimatedBackgrounds/RippleGridBackground";
+import StripeConnectReturnSync from '@/components/Payments/StripeConnectReturnSync';
+import OrganizerStripeConnectHint from '@/components/Organizer/OrganizerStripeConnectHint';
+import { isStripeConnectReady } from '@/lib/payments/stripeConnectReadiness';
+import { getRefundCountsForViewer } from '@/app/(dashboard)/rsvp/actions';
+import { EMPTY_REFUND_VIEWER_COUNTS } from '@/components/Payments/refunds/types/refunds';
 
 export const metadata: Metadata = { title: 'Organizer' }
 
@@ -29,11 +41,21 @@ export default async function OrganizerPage({ searchParams }: OrganizerPageProps
   }
 
   const resolvedSearchParams: RawSearchParams = searchParams ? await searchParams : {};
+  const stripeConnectState = Array.isArray(resolvedSearchParams.stripe_connect)
+    ? resolvedSearchParams.stripe_connect[0]
+    : resolvedSearchParams.stripe_connect;
+  const shouldSyncStripeConnectReturn =
+    stripeConnectState === 'return' || stripeConnectState === 'refresh';
+  const paidFilterParam = Array.isArray(resolvedSearchParams.paid)
+    ? resolvedSearchParams.paid[0]
+    : resolvedSearchParams.paid;
+  const hasPaidFilter = paidFilterParam === 'paid' || paidFilterParam === 'free';
   const isSearchMode = !!(
     resolvedSearchParams.search ||
     resolvedSearchParams.category ||
     resolvedSearchParams.location ||
-    resolvedSearchParams.date
+    resolvedSearchParams.date ||
+    hasPaidFilter
   );
 
   const emptyPopular: PopularEvents = [];
@@ -47,17 +69,28 @@ export default async function OrganizerPage({ searchParams }: OrganizerPageProps
     ? Promise.resolve(emptyMonthly)
     : getMonthlyEventsByOrganizer(user.clerkId);
 
-  const [organizerDataPayload, upcomingRsvpCount, popularEvents, monthlyEvents] = await Promise.all([
+  const [organizerDataPayload, upcomingRsvpCount, popularEvents, monthlyEvents, overviewSnapshot, overviewTimeSeries, refundCountsResult] = await Promise.all([
     getEventsByOrganizer(user.clerkId, resolvedSearchParams),
     getUserUpcomingRsvpCount(user.clerkId),
     popularPromise,
     monthlyPromise,
+    getOrganizerOverviewSnapshot(user.clerkId),
+    getOrganizerOverviewTimeSeriesSnapshot(user.clerkId, { days: 30 }),
+    getRefundCountsForViewer(),
   ]);
+  const hasAnyEventsEver = organizerDataPayload.context.hasAnyEventsEver;
+  const organizerStripeReady = isStripeConnectReady(user);
+  const showStripeConnectHint = user.role === 'organizer';
+  const shouldShowStripeConnectCta = showStripeConnectHint && !organizerStripeReady;
   const showMyAgendaBtn = upcomingRsvpCount > 0;
-  const showCreateBtn   = organizerDataPayload.metadata.totalEvents! > 0;
+  const showCreateBtn   = hasAnyEventsEver;
+  const refundCounts = refundCountsResult.success
+    ? refundCountsResult.data
+    : EMPTY_REFUND_VIEWER_COUNTS;
 
   return (
     <DashboardPageWrapper>
+      <StripeConnectReturnSync enabled={shouldSyncStripeConnectReturn} />
       <div className="relative min-h-screen">
         <div
           className="
@@ -118,6 +151,17 @@ export default async function OrganizerPage({ searchParams }: OrganizerPageProps
             <h1 className="text-4xl md:text-5xl text-white font-bold font-display self-start">
               Your Events
             </h1>
+
+            {shouldShowStripeConnectCta && <OrganizerStripeConnectHint />}
+
+            {showStripeConnectHint && !shouldShowStripeConnectCta && (
+              <p className="text-xs text-zinc-300">
+                Manage Stripe payouts from your profile menu in the navbar under
+                {' '}
+                <span className="font-semibold text-white">Payments</span>.
+              </p>
+            )}
+
           </div>
 
           <OrganizerPageClientWrapper
@@ -125,6 +169,10 @@ export default async function OrganizerPage({ searchParams }: OrganizerPageProps
             popularEvents={popularEvents}
             monthlyEvents={monthlyEvents}
             isSearchMode={isSearchMode}
+            refundCounts={refundCounts}
+            overviewSnapshot={overviewSnapshot}
+            overviewTimeSeries={overviewTimeSeries}
+            isStripeReady={organizerStripeReady}
           />
         </section>
       </div>

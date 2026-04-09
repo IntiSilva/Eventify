@@ -2,8 +2,9 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
-import { CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import AnimatedIcon from '@/components/LordIcons/AnimatedIcon';
+import { CheckAnimatedIcon } from '@/lib/icons';
 
 /**
  * This page is reached after a Stripe 3DS redirect has been cleaned by the return handler.
@@ -30,10 +31,10 @@ export default function CheckoutSuccessPage() {
   return (
     <main className="mx-auto max-w-xl p-6">
       <div className="flex flex-col items-center text-center">
-        <CheckCircle2 className="h-12 w-12 text-emerald-500 mb-4" />
+        <AnimatedIcon icon={CheckAnimatedIcon} size={48} state="in" persistAfterIn  className='mb-4'/>
         <h1 className="text-2xl font-semibold text-white">Payment submitted</h1>
         <p className="mt-2 text-sm text-zinc-400">
-          We are processing your payment confirmation. Your RSVP will be confirmed once payment succeeds.
+          We are processing your payment result. Attendance is confirmed only after final server validation. If joining is no longer allowed, your payment will be refunded automatically.
         </p>
         <button
           onClick={() => router.push('/agenda')}

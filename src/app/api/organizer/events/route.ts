@@ -37,7 +37,7 @@ export async function GET(request: Request) {
     // 4. Return the result as JSON (standard envelope)
     const body: OrganizerEventsResponse = {
       success: true,
-      ...result, // { data, metadata }
+      ...result, // { data, metadata, context }
     };
 
     return NextResponse.json(body);

@@ -4,10 +4,11 @@ import { EventCategory, UserRole } from '@/generated/prisma'
 import type { EventWithCreatorAndRsvps } from '@/types/event'
 
 /* ----------------------- Hoisted, typed mocks ----------------------- */
-// Keep all top-level values inside vi.hoisted() to avoid hoist issues.
-const h = vi.hoisted(() => {
+  // Keep all top-level values inside vi.hoisted() to avoid hoist issues.
+  const h = vi.hoisted(() => {
   // Minimal event factory used by the prisma mock
   const makeEvent = (overrides?: Partial<EventWithCreatorAndRsvps>): EventWithCreatorAndRsvps => {
+    const { archivedAt, ...restOverrides } = overrides ?? {}
     const now = new Date('2099-10-10T10:00:00.000Z')
     return {
       id: 'evt_1',
@@ -27,6 +28,11 @@ const h = vi.hoisted(() => {
       contactEmail: 'user@example.com',
       contactPhone: null,
       contactPhoneApps: null,
+      isPaid: false,
+      priceCents: null,
+      currency: null,
+      currentPriceVersionId: null,
+      archivedAt: archivedAt ?? null,
       createdAt: now,
       creator: {
         clerkId: 'org_1',
@@ -38,23 +44,37 @@ const h = vi.hoisted(() => {
         role: UserRole.organizer,
       },
       rsvps: [],
-      ...overrides,
+      ...restOverrides,
     }
   }
 
   /* ---- Types for the prisma functions we’ll mock ---- */
   type FindUniqueUser = (args: {
     where: { clerkId: string },
-    select: { role: true; clerkId: true }
-  }) => Promise<{ role: UserRole; clerkId: string } | null>
+    select: {
+      role: true;
+      clerkId: true;
+      stripeConnectAccountId: true;
+      stripeConnectPayoutsEnabled: true;
+      stripeConnectChargesEnabled: true;
+      stripeConnectDetailsSubmitted: true;
+    }
+  }) => Promise<{
+    role: UserRole;
+    clerkId: string;
+    stripeConnectAccountId: string | null;
+    stripeConnectPayoutsEnabled: boolean;
+    stripeConnectChargesEnabled: boolean;
+    stripeConnectDetailsSubmitted: boolean;
+  } | null>
 
   type FindUniqueEvent = (args: { where: { id: string } }) =>
-    Promise<Pick<EventWithCreatorAndRsvps, 'id' | 'createdBy' | 'date' | 'eventTimeZone'> | null>
+    Promise<Pick<EventWithCreatorAndRsvps, 'id' | 'createdBy' | 'date' | 'eventTimeZone' | 'isPaid' | 'priceCents' | 'currency' | 'currentPriceVersionId'> | null>
 
   type UpdateEventFn = (args: {
     where: { id: string },
     data: Record<string, unknown>,
-    include: { creator: true; rsvps: true }
+    include: Record<string, unknown>
   }) => Promise<EventWithCreatorAndRsvps>
 
   // Mocks
@@ -62,6 +82,11 @@ const h = vi.hoisted(() => {
   const findUniqueUserMock = vi.fn<FindUniqueUser>()
   const findUniqueEventMock = vi.fn<FindUniqueEvent>()
   const updateEventMock = vi.fn<UpdateEventFn>()
+  const paymentFindFirstMock = vi.fn()
+  const txPriceVersionFindFirstMock = vi.fn()
+  const txPriceVersionUpdateManyMock = vi.fn()
+  const txPriceVersionCreateMock = vi.fn()
+  const transactionMock = vi.fn()
   const revalidatePathMock = vi.fn<(path: string) => void>()
 
   // Utils used by the action (deterministic, typed)
@@ -86,6 +111,11 @@ const h = vi.hoisted(() => {
     findUniqueUserMock,
     findUniqueEventMock,
     updateEventMock,
+    paymentFindFirstMock,
+    txPriceVersionFindFirstMock,
+    txPriceVersionUpdateManyMock,
+    txPriceVersionCreateMock,
+    transactionMock,
     revalidatePathMock,
     canonicalizeTimeZone,
     isValidIanaTimeZone,
@@ -93,6 +123,7 @@ const h = vi.hoisted(() => {
     yyyymmddKey,
     computeEventLocalKeys,
     stripDiacritics,
+    connectReady: undefined as boolean | undefined,
   }
 })
 
@@ -108,12 +139,26 @@ vi.mock('@/lib/prisma', () => ({
       findUnique: h.findUniqueEventMock,
       update: h.updateEventMock,
     },
+    payment: {
+      findFirst: h.paymentFindFirstMock,
+    },
+    eventPriceVersion: {
+      findFirst: h.txPriceVersionFindFirstMock,
+      updateMany: h.txPriceVersionUpdateManyMock,
+      create: h.txPriceVersionCreateMock,
+    },
+    $transaction: h.transactionMock,
   },
 }))
 
 vi.mock('next/cache', () => ({
   revalidatePath: h.revalidatePathMock,
 }))
+
+vi.mock('@/lib/payments/stripeConnectReadiness', async () => {
+  const { buildConnectConfigMock } = await import('@/test-utils/mockConnectConfig')
+  return buildConnectConfigMock(h)
+})
 
 // Make date-fns-tz deterministic (identity transform is enough here)
 vi.mock('date-fns-tz', () => ({
@@ -140,7 +185,13 @@ beforeEach(() => {
   h.findUniqueUserMock.mockReset()
   h.findUniqueEventMock.mockReset()
   h.updateEventMock.mockReset()
+  h.paymentFindFirstMock.mockReset()
+  h.txPriceVersionFindFirstMock.mockReset()
+  h.txPriceVersionUpdateManyMock.mockReset()
+  h.txPriceVersionCreateMock.mockReset()
+  h.transactionMock.mockReset()
   h.revalidatePathMock.mockReset()
+  h.connectReady = undefined
 })
 
 /* ================================ TESTS =================================== */
@@ -149,7 +200,14 @@ describe('events/actions.updateEvent', () => {
   it('allows admin to update title/location and normalizes fields', async () => {
     // Given an admin user and an existing event owned by someone else
     h.authMock.mockResolvedValue({ userId: 'admin_1' })
-    h.findUniqueUserMock.mockResolvedValue({ role: UserRole.admin, clerkId: 'admin_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.admin,
+      clerkId: 'admin_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
 
     const existing = h.makeEvent({ createdBy: 'org_1' })
     h.findUniqueEventMock.mockResolvedValue({
@@ -157,6 +215,10 @@ describe('events/actions.updateEvent', () => {
       createdBy: existing.createdBy,
       date: existing.date,
       eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
     })
 
     // Capture the "update" payload and echo a merged result
@@ -200,13 +262,22 @@ describe('events/actions.updateEvent', () => {
 
       // Returned event echoes updated fields
       expect(result.updatedEvent?.title).toBe('  My NEW Title ')
+      expect(result.updatedEvent?.creator.clerkId).toBe(existing.creator.clerkId)
+      expect(Array.isArray(result.updatedEvent?.rsvps)).toBe(true)
       expect(result.updatedEvent?.location).toBe(' Córdoba ')
     }
   })
 
   it('blocks organizer updating an event they do not own', async () => {
     h.authMock.mockResolvedValue({ userId: 'org_2' })
-    h.findUniqueUserMock.mockResolvedValue({ role: UserRole.organizer, clerkId: 'org_2' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.organizer,
+      clerkId: 'org_2',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
 
     const existing = h.makeEvent({ createdBy: 'org_1' })
     h.findUniqueEventMock.mockResolvedValue({
@@ -214,6 +285,10 @@ describe('events/actions.updateEvent', () => {
       createdBy: existing.createdBy,
       date: existing.date,
       eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
     })
 
     const result = await updateEvent({
@@ -226,9 +301,412 @@ describe('events/actions.updateEvent', () => {
     expect(h.updateEventMock).not.toHaveBeenCalled()
   })
 
+  it('blocks organizer from updating a free event into paid unless Stripe Connect is fully enabled', async () => {
+    h.authMock.mockResolvedValue({ userId: 'org_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.organizer,
+      clerkId: 'org_1',
+      stripeConnectAccountId: 'acct_incomplete',
+      stripeConnectPayoutsEnabled: true,
+      stripeConnectChargesEnabled: true,
+      stripeConnectDetailsSubmitted: false,
+    })
+
+    const existing = h.makeEvent({
+      createdBy: 'org_1',
+      isPaid: true,
+      priceCents: 2500,
+      currency: 'USD',
+      currentPriceVersionId: 'pv_1',
+      date: new Date('2099-11-10T18:00:00.000Z'),
+    })
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    const result = await updateEvent({
+      id: existing.id,
+      isPaid: true,
+      priceCents: 5500,
+      currency: 'USD',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('Paid events require an organizer')
+    expect(h.transactionMock).not.toHaveBeenCalled()
+    expect(h.updateEventMock).not.toHaveBeenCalled()
+    expect(h.paymentFindFirstMock).not.toHaveBeenCalled()
+  })
+
+  it('allows organizer free-to-paid update when Stripe Connect is fully enabled', async () => {
+    h.authMock.mockResolvedValue({ userId: 'org_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.organizer,
+      clerkId: 'org_1',
+      stripeConnectAccountId: 'acct_ready',
+      stripeConnectPayoutsEnabled: true,
+      stripeConnectChargesEnabled: true,
+      stripeConnectDetailsSubmitted: true,
+    })
+
+    const existing = h.makeEvent({
+      createdBy: 'org_1',
+      isPaid: false,
+      priceCents: null,
+      currency: null,
+      currentPriceVersionId: 'pv_1',
+      date: new Date('2099-11-10T18:00:00.000Z'),
+    })
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    h.paymentFindFirstMock.mockResolvedValue(null)
+    h.txPriceVersionFindFirstMock.mockResolvedValue({ versionNumber: 1 })
+    h.txPriceVersionUpdateManyMock.mockResolvedValue({ count: 1 })
+    h.txPriceVersionCreateMock.mockResolvedValue({ id: 'pv_2' })
+    h.updateEventMock.mockResolvedValue(
+      h.makeEvent({
+        createdBy: 'org_1',
+        isPaid: true,
+        priceCents: 5500,
+        currency: 'USD',
+        currentPriceVersionId: 'pv_2',
+      })
+    )
+
+    h.transactionMock.mockImplementation(
+      async (
+        cb: (tx: {
+          event: { update: typeof h.updateEventMock }
+          eventPriceVersion: {
+            findFirst: typeof h.txPriceVersionFindFirstMock
+            updateMany: typeof h.txPriceVersionUpdateManyMock
+            create: typeof h.txPriceVersionCreateMock
+          }
+        }) => Promise<EventWithCreatorAndRsvps>
+      ) =>
+        cb({
+          event: { update: h.updateEventMock },
+          eventPriceVersion: {
+            findFirst: h.txPriceVersionFindFirstMock,
+            updateMany: h.txPriceVersionUpdateManyMock,
+            create: h.txPriceVersionCreateMock,
+          },
+        })
+    )
+
+    const result = await updateEvent({
+      id: existing.id,
+      isPaid: true,
+      priceCents: 5500,
+      currency: 'USD',
+    })
+
+    expect(result.success).toBe(true)
+    expect(h.transactionMock).toHaveBeenCalledTimes(1)
+    expect(h.updateEventMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('blocks admins from flipping an organizer event to paid when the organizer creator is not ready', async () => {
+    h.authMock.mockResolvedValue({ userId: 'admin_1' })
+    h.findUniqueUserMock
+      .mockResolvedValueOnce({
+        role: UserRole.admin,
+        clerkId: 'admin_1',
+        stripeConnectAccountId: null,
+        stripeConnectPayoutsEnabled: false,
+        stripeConnectChargesEnabled: false,
+        stripeConnectDetailsSubmitted: false,
+      })
+      .mockResolvedValueOnce({
+        role: UserRole.organizer,
+        clerkId: 'org_1',
+        stripeConnectAccountId: 'acct_incomplete',
+        stripeConnectPayoutsEnabled: true,
+        stripeConnectChargesEnabled: true,
+        stripeConnectDetailsSubmitted: false,
+      })
+
+    const existing = h.makeEvent({
+      createdBy: 'org_1',
+      isPaid: false,
+      priceCents: null,
+      currency: null,
+      currentPriceVersionId: 'pv_1',
+      date: new Date('2099-11-10T18:00:00.000Z'),
+    })
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    const result = await updateEvent({
+      id: existing.id,
+      isPaid: true,
+      priceCents: 5500,
+      currency: 'USD',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('Paid events require an organizer')
+    expect(h.transactionMock).not.toHaveBeenCalled()
+    expect(h.updateEventMock).not.toHaveBeenCalled()
+  })
+
+  it('allows admins to flip an organizer event to paid when the organizer creator is ready', async () => {
+    h.authMock.mockResolvedValue({ userId: 'admin_1' })
+    h.findUniqueUserMock
+      .mockResolvedValueOnce({
+        role: UserRole.admin,
+        clerkId: 'admin_1',
+        stripeConnectAccountId: null,
+        stripeConnectPayoutsEnabled: false,
+        stripeConnectChargesEnabled: false,
+        stripeConnectDetailsSubmitted: false,
+      })
+      .mockResolvedValueOnce({
+        role: UserRole.organizer,
+        clerkId: 'org_1',
+        stripeConnectAccountId: 'acct_ready',
+        stripeConnectPayoutsEnabled: true,
+        stripeConnectChargesEnabled: true,
+        stripeConnectDetailsSubmitted: true,
+      })
+
+    const existing = h.makeEvent({
+      createdBy: 'org_1',
+      isPaid: false,
+      priceCents: null,
+      currency: null,
+      currentPriceVersionId: 'pv_1',
+      date: new Date('2099-11-10T18:00:00.000Z'),
+    })
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    h.paymentFindFirstMock.mockResolvedValue(null)
+    h.txPriceVersionFindFirstMock.mockResolvedValue({ versionNumber: 1 })
+    h.txPriceVersionUpdateManyMock.mockResolvedValue({ count: 1 })
+    h.txPriceVersionCreateMock.mockResolvedValue({ id: 'pv_2' })
+    h.updateEventMock.mockResolvedValue(
+      h.makeEvent({
+        createdBy: 'org_1',
+        isPaid: true,
+        priceCents: 5500,
+        currency: 'USD',
+        currentPriceVersionId: 'pv_2',
+      })
+    )
+
+    h.transactionMock.mockImplementation(
+      async (
+        cb: (tx: {
+          event: { update: typeof h.updateEventMock }
+          eventPriceVersion: {
+            findFirst: typeof h.txPriceVersionFindFirstMock
+            updateMany: typeof h.txPriceVersionUpdateManyMock
+            create: typeof h.txPriceVersionCreateMock
+          }
+        }) => Promise<EventWithCreatorAndRsvps>
+      ) =>
+        cb({
+          event: { update: h.updateEventMock },
+          eventPriceVersion: {
+            findFirst: h.txPriceVersionFindFirstMock,
+            updateMany: h.txPriceVersionUpdateManyMock,
+            create: h.txPriceVersionCreateMock,
+          },
+        })
+    )
+
+    const result = await updateEvent({
+      id: existing.id,
+      isPaid: true,
+      priceCents: 5500,
+      currency: 'USD',
+    })
+
+    expect(result.success).toBe(true)
+    expect(h.transactionMock).toHaveBeenCalledTimes(1)
+    expect(h.updateEventMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows admins to flip their own admin-owned event to paid in platform mode', async () => {
+    h.authMock.mockResolvedValue({ userId: 'admin_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.admin,
+      clerkId: 'admin_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
+
+    const existing = h.makeEvent({
+      createdBy: 'admin_1',
+      creator: {
+        clerkId: 'admin_1',
+        username: 'admin',
+        firstName: 'Admin',
+        lastName: 'User',
+        imageUrl: null,
+        hasImage: false,
+        role: UserRole.admin,
+      },
+      isPaid: false,
+      priceCents: null,
+      currency: null,
+      currentPriceVersionId: 'pv_1',
+      date: new Date('2099-11-10T18:00:00.000Z'),
+    })
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    h.paymentFindFirstMock.mockResolvedValue(null)
+    h.txPriceVersionFindFirstMock.mockResolvedValue({ versionNumber: 1 })
+    h.txPriceVersionUpdateManyMock.mockResolvedValue({ count: 1 })
+    h.txPriceVersionCreateMock.mockResolvedValue({ id: 'pv_2' })
+    h.updateEventMock.mockResolvedValue(
+      h.makeEvent({
+        createdBy: 'admin_1',
+        creator: {
+          clerkId: 'admin_1',
+          username: 'admin',
+          firstName: 'Admin',
+          lastName: 'User',
+          imageUrl: null,
+          hasImage: false,
+          role: UserRole.admin,
+        },
+        isPaid: true,
+        priceCents: 5500,
+        currency: 'USD',
+        currentPriceVersionId: 'pv_2',
+      })
+    )
+
+    h.transactionMock.mockImplementation(
+      async (
+        cb: (tx: {
+          event: { update: typeof h.updateEventMock }
+          eventPriceVersion: {
+            findFirst: typeof h.txPriceVersionFindFirstMock
+            updateMany: typeof h.txPriceVersionUpdateManyMock
+            create: typeof h.txPriceVersionCreateMock
+          }
+        }) => Promise<EventWithCreatorAndRsvps>
+      ) =>
+        cb({
+          event: { update: h.updateEventMock },
+          eventPriceVersion: {
+            findFirst: h.txPriceVersionFindFirstMock,
+            updateMany: h.txPriceVersionUpdateManyMock,
+            create: h.txPriceVersionCreateMock,
+          },
+        })
+    )
+
+    const result = await updateEvent({
+      id: existing.id,
+      isPaid: true,
+      priceCents: 5500,
+      currency: 'USD',
+    })
+
+    expect(result.success).toBe(true)
+    expect(h.transactionMock).toHaveBeenCalledTimes(1)
+    expect(h.updateEventMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('blocks non-pricing edits on already-paid events when the creator is no longer Connect-ready', async () => {
+    h.authMock.mockResolvedValue({ userId: 'org_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.organizer,
+      clerkId: 'org_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
+
+    const existing = h.makeEvent({
+      createdBy: 'org_1',
+      isPaid: true,
+      priceCents: 2500,
+      currency: 'USD',
+      currentPriceVersionId: 'pv_1',
+      date: new Date('2099-11-10T18:00:00.000Z'),
+    })
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    const result = await updateEvent({
+      id: existing.id,
+      title: 'Updated title',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('Paid events require an organizer')
+    expect(h.transactionMock).not.toHaveBeenCalled()
+    expect(h.updateEventMock).not.toHaveBeenCalled()
+    expect(h.paymentFindFirstMock).not.toHaveBeenCalled()
+  })
+
   it('recomputes local keys on TZ-only change (date unchanged)', async () => {
     h.authMock.mockResolvedValue({ userId: 'org_1' })
-    h.findUniqueUserMock.mockResolvedValue({ role: UserRole.organizer, clerkId: 'org_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.organizer,
+      clerkId: 'org_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
 
     const existing = h.makeEvent({ createdBy: 'org_1', date: new Date('2099-10-10T10:00:00.000Z') })
     h.findUniqueEventMock.mockResolvedValue({
@@ -236,6 +714,10 @@ describe('events/actions.updateEvent', () => {
       createdBy: existing.createdBy,
       date: existing.date,
       eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
     })
 
     h.updateEventMock.mockImplementation(async ({ data }) => {
@@ -268,7 +750,14 @@ describe('events/actions.updateEvent', () => {
 
   it('recomputes local keys when updating the date (TZ canonicalized)', async () => {
     h.authMock.mockResolvedValue({ userId: 'org_1' })
-    h.findUniqueUserMock.mockResolvedValue({ role: UserRole.organizer, clerkId: 'org_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.organizer,
+      clerkId: 'org_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
 
     const existing = h.makeEvent({ createdBy: 'org_1', eventTimeZone: 'UTC' })
     h.findUniqueEventMock.mockResolvedValue({
@@ -276,6 +765,10 @@ describe('events/actions.updateEvent', () => {
       createdBy: existing.createdBy,
       date: existing.date,
       eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
     })
 
     // IMPORTANT: must be within +2 years of the frozen clock (2025-11-03)
@@ -315,7 +808,14 @@ describe('events/actions.updateEvent', () => {
 
   it('returns a validation error when contactPhone is provided but contactPhoneApps is missing', async () => {
     h.authMock.mockResolvedValue({ userId: 'admin_1' })
-    h.findUniqueUserMock.mockResolvedValue({ role: UserRole.admin, clerkId: 'admin_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.admin,
+      clerkId: 'admin_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
 
     const existing = h.makeEvent()
     h.findUniqueEventMock.mockResolvedValue({
@@ -323,6 +823,10 @@ describe('events/actions.updateEvent', () => {
       createdBy: existing.createdBy,
       date: existing.date,
       eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
     })
 
     const res = await updateEvent({
@@ -338,7 +842,14 @@ describe('events/actions.updateEvent', () => {
 
   it('returns a validation error when date is in the past (in final TZ)', async () => {
     h.authMock.mockResolvedValue({ userId: 'admin_1' })
-    h.findUniqueUserMock.mockResolvedValue({ role: UserRole.admin, clerkId: 'admin_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.admin,
+      clerkId: 'admin_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
 
     const existing = h.makeEvent()
     h.findUniqueEventMock.mockResolvedValue({
@@ -346,6 +857,10 @@ describe('events/actions.updateEvent', () => {
       createdBy: existing.createdBy,
       date: existing.date,
       eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
     })
 
     // Now is frozen at 2025-11-03T15:00Z – pick a past date
@@ -360,5 +875,221 @@ describe('events/actions.updateEvent', () => {
     expect(res.success).toBe(false)
     const errors = (res as Exclude<UpdateEventResult, { success: true }>).errors
     expect(errors?.date?._errors?.some((m) => /cannot be in the past/i.test(m))).toBe(true)
+  })
+
+  it('rejects midnight crossover updates that are <4h away in absolute time and returns validation envelope', async () => {
+    // 2025-11-03 23:30 in America/Argentina/Buenos_Aires
+    vi.setSystemTime(new Date('2025-11-04T02:30:00.000Z'))
+
+    h.authMock.mockResolvedValue({ userId: 'admin_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.admin,
+      clerkId: 'admin_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
+
+    const existing = h.makeEvent()
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    // 2025-11-04 00:30 in America/Argentina/Buenos_Aires (only +60 min away)
+    const promise = updateEvent({
+      id: existing.id,
+      date: '2025-11-04T03:30:00.000Z',
+      eventTimeZone: 'America/Argentina/Buenos_Aires',
+    })
+
+    await expect(promise).resolves.toMatchObject({
+      success: false,
+      message: 'Validation failed. Please check the form fields.',
+    })
+
+    const result = await promise
+    const errors = (result as Exclude<UpdateEventResult, { success: true }>).errors
+    expect(errors?.date?._errors?.some((m) => /at least 4 hours/i.test(m))).toBe(true)
+    expect(h.updateEventMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects updates at 239 minutes lead time', async () => {
+    vi.setSystemTime(new Date('2025-11-03T12:00:00.000Z'))
+
+    h.authMock.mockResolvedValue({ userId: 'admin_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.admin,
+      clerkId: 'admin_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
+
+    const existing = h.makeEvent()
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    const res = await updateEvent({
+      id: existing.id,
+      date: '2025-11-03T15:59:00.000Z', // +239 min
+      eventTimeZone: 'UTC',
+    })
+
+    expect(res.success).toBe(false)
+    expect(res.message).toBe('Validation failed. Please check the form fields.')
+    const errors = (res as Exclude<UpdateEventResult, { success: true }>).errors
+    expect(errors?.date?._errors?.some((m) => /at least 4 hours/i.test(m))).toBe(true)
+    expect(h.updateEventMock).not.toHaveBeenCalled()
+  })
+
+  it('allows updates at exactly 240 minutes lead time', async () => {
+    vi.setSystemTime(new Date('2025-11-03T12:00:00.000Z'))
+
+    h.authMock.mockResolvedValue({ userId: 'admin_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.admin,
+      clerkId: 'admin_1',
+      stripeConnectAccountId: null,
+      stripeConnectPayoutsEnabled: false,
+      stripeConnectChargesEnabled: false,
+      stripeConnectDetailsSubmitted: false,
+    })
+
+    const existing = h.makeEvent()
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    h.updateEventMock.mockImplementation(async ({ data }) => {
+      const d = data as { date?: Date }
+      return h.makeEvent({
+        date: d.date ?? existing.date,
+      })
+    })
+
+    const res = await updateEvent({
+      id: existing.id,
+      date: '2025-11-03T16:00:00.000Z', // +240 min
+      eventTimeZone: 'UTC',
+    })
+
+    expect(res.success).toBe(true)
+    expect(h.updateEventMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns hydrated creator + rsvps in the pricing-change transaction path', async () => {
+    h.authMock.mockResolvedValue({ userId: 'org_1' })
+    h.findUniqueUserMock.mockResolvedValue({
+      role: UserRole.organizer,
+      clerkId: 'org_1',
+      stripeConnectAccountId: 'acct_org_ready',
+      stripeConnectPayoutsEnabled: true,
+      stripeConnectChargesEnabled: true,
+      stripeConnectDetailsSubmitted: true,
+    })
+
+    const existing = h.makeEvent({
+      createdBy: 'org_1',
+      isPaid: true,
+      priceCents: 1000,
+      currency: 'USD',
+      currentPriceVersionId: 'pv_1',
+      date: new Date('2025-11-05T20:00:00.000Z'),
+    })
+
+    h.findUniqueEventMock.mockResolvedValue({
+      id: existing.id,
+      createdBy: existing.createdBy,
+      date: existing.date,
+      eventTimeZone: existing.eventTimeZone,
+      isPaid: existing.isPaid,
+      priceCents: existing.priceCents,
+      currency: existing.currency,
+      currentPriceVersionId: existing.currentPriceVersionId,
+    })
+
+    h.paymentFindFirstMock.mockResolvedValue(null)
+    h.txPriceVersionFindFirstMock.mockResolvedValue({ versionNumber: 1 })
+    h.txPriceVersionUpdateManyMock.mockResolvedValue({ count: 1 })
+    h.txPriceVersionCreateMock.mockResolvedValue({ id: 'pv_2' })
+
+    const txUpdatedEvent = h.makeEvent({
+      createdBy: 'org_1',
+      isPaid: true,
+      priceCents: 500,
+      currency: 'USD',
+      currentPriceVersionId: 'pv_2',
+    })
+    h.updateEventMock.mockResolvedValue(txUpdatedEvent)
+
+    h.transactionMock.mockImplementation(
+      async (
+        cb: (tx: {
+          event: { update: typeof h.updateEventMock }
+          eventPriceVersion: {
+            findFirst: typeof h.txPriceVersionFindFirstMock
+            updateMany: typeof h.txPriceVersionUpdateManyMock
+            create: typeof h.txPriceVersionCreateMock
+          }
+        }) => Promise<EventWithCreatorAndRsvps>
+      ) =>
+        cb({
+          event: { update: h.updateEventMock },
+          eventPriceVersion: {
+            findFirst: h.txPriceVersionFindFirstMock,
+            updateMany: h.txPriceVersionUpdateManyMock,
+            create: h.txPriceVersionCreateMock,
+          },
+        })
+    )
+
+    const result = await updateEvent({
+      id: existing.id,
+      priceCents: 500,
+    })
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(h.transactionMock).toHaveBeenCalledTimes(1)
+      expect(h.updateEventMock).toHaveBeenCalledTimes(1)
+
+      const call = h.updateEventMock.mock.calls[0][0]
+      expect(call.data).toMatchObject({
+        isPaid: true,
+        priceCents: 500,
+        currency: 'USD',
+        currentPriceVersionId: 'pv_2',
+      })
+      expect(call.include).toBeDefined()
+
+      expect(result.updatedEvent?.creator.clerkId).toBe('org_1')
+      expect(Array.isArray(result.updatedEvent?.rsvps)).toBe(true)
+      expect(result.updatedEvent?.currentPriceVersionId).toBe('pv_2')
+      expect(result.updatedEvent?.priceCents).toBe(500)
+    }
   })
 })

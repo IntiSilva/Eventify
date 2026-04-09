@@ -36,6 +36,7 @@ export default function AnimatedIcon({
   persistAfterIn = false,
 }: AnimatedIconProps) {
   const playerRef = useRef<Player>(null);
+  const isPlayControlled = typeof play === 'boolean';
 
   const freeze = () => {
     const p = playerRef.current;
@@ -59,10 +60,17 @@ export default function AnimatedIcon({
   }, [play, direction]);
 
   useEffect(() => {
-    if (!playerRef.current) return;
-    if (state === 'loop') playerRef.current.playFromBeginning?.();
-    if (state === 'in') playerRef.current.playFromBeginning?.();
-  }, [state]);
+    const p = playerRef.current;
+    if (!p) return;
+    if (state === 'loop') {
+      p.playFromBeginning?.();
+      return;
+    }
+    // If `play` is controlled, let the `play` effect above drive "in" animations.
+    if (state === 'in' && !isPlayControlled) {
+      p.playFromBeginning?.();
+    }
+  }, [state, isPlayControlled]);
 
   const onMouseEnter = () => {
     if (disableInternalHover) return;

@@ -3,9 +3,9 @@ import { cookies } from "next/headers"
 import { addDays, startOfDay, startOfMonth, endOfMonth } from "date-fns"
 import { toZonedTime } from "date-fns-tz"
 import type { RolesForEvents, EventWithCreatorAndRsvps } from "@/types/event"
-import { EventCategory, RSVPStatus, Prisma } from "@/generated/prisma"
+import { EventCategory, PaymentStatus, Prisma, RefundRequestStatus } from "@/generated/prisma"
+import { CURRENTLY_ATTENDING_RSVP_WHERE } from "@/lib/rsvpAttendance"
 import { getSingleSearchParam, normalizeStringForSearch, parseYyyyMmDdToKey, yyyymmddKey, canonicalizeTimeZone, isValidIanaTimeZone  } from "./utils"
-import { deleteExpiredEvents } from "./cleanup"
 import { FEATURED_LIMIT, PAGE_SIZE_MAIN } from "./constants"
 
 
@@ -33,6 +33,14 @@ function computeTodayKeyOrUtc(whereTz?: string): {
   return { nowUtc };
 }
 
+type EventPaidFilterParam = 'all' | 'paid' | 'free';
+
+function parseEventPaidFilterParam(value?: string): EventPaidFilterParam {
+  if (value === 'paid') return 'paid';
+  if (value === 'free') return 'free';
+  return 'all';
+}
+
 
 
 export async function getEventsByOrganizer(
@@ -40,8 +48,6 @@ export async function getEventsByOrganizer(
   searchParams: { [key: string]: string | string[] | undefined }
 ) {
   if (!clerkId) throw new Error("No organizer ID was provided");
-
-  await deleteExpiredEvents();
 
   /* ---------- 1) Pagination & basic filters ---------- */
   const page   = parseInt(getSingleSearchParam(searchParams.page)  || "1",  10);
@@ -52,10 +58,12 @@ export async function getEventsByOrganizer(
   const location   = getSingleSearchParam(searchParams.location);
   const category   = getSingleSearchParam(searchParams.category) as EventCategory | undefined;
   const dateStr    = getSingleSearchParam(searchParams.date);   // 'YYYY-MM-DD' or undefined
+  const paidFilter = parseEventPaidFilterParam(getSingleSearchParam(searchParams.paid));
 
   /* ---------- 2) WHERE clause ---------- */
   const whereClause: Prisma.EventWhereInput = {
     createdBy: clerkId,
+    archivedAt: null,
   };
 
   if (searchTerm) {
@@ -86,13 +94,19 @@ export async function getEventsByOrganizer(
     whereClause.date = { gte: new Date() };
   }
 
+  if (paidFilter === 'paid') {
+    whereClause.isPaid = true;
+  } else if (paidFilter === 'free') {
+    whereClause.isPaid = false;
+  }
+
   /* ---------- 3) ORDER ---------- */
   const orderBy: Prisma.EventOrderByWithRelationInput[] = dateStr
     ? [{ eventLocalMinuteOfDay: "asc" }, { date: "asc" }]
     : [{ date: "asc" }];
 
   /* ---------- 4) DB queries ---------- */
-  const [events, totalEvents] = await Promise.all([
+  const [events, totalEvents, totalEventsEver] = await Promise.all([
     prisma.event.findMany({
       where: whereClause,
       orderBy,
@@ -100,6 +114,12 @@ export async function getEventsByOrganizer(
       take: limit,
     }),
     prisma.event.count({ where: whereClause }),
+    prisma.event.count({
+      where: {
+        createdBy: clerkId,
+        archivedAt: null,
+      },
+    }),
   ]);
 
   /* ---------- 5) Response shape ---------- */
@@ -111,20 +131,25 @@ export async function getEventsByOrganizer(
       eventsPerPage : limit,
       totalPages    : Math.ceil(totalEvents / limit),
     },
+    context: {
+      hasAnyEventsEver: totalEventsEver > 0,
+    },
   };
 }
 
 
-export async function getUsersWithEvents() {
-
-  await deleteExpiredEvents();
-  
+export async function getUsersForAdminManagement() {
   const users = await prisma.user.findMany({
     where: {
       OR: [
         { role: 'organizer' },
         { role: 'admin' },
       ],
+      // Membership in the admin management people list:
+      // any admin/organizer who has created at least one event (historical).
+      createdEvents: {
+        some: {},
+      },
     },
     select: {
       clerkId: true,
@@ -134,11 +159,13 @@ export async function getUsersWithEvents() {
       imageUrl: true,
       hasImage: true,
       role: true,
-      // Instead of fetching all events, we only count how many there are.
+      // Display count in admin management UI: active upcoming non-archived events.
+      // This count is intentionally not used for people-list membership.
       _count: {
         select: {
           createdEvents: {
             where: {
+              archivedAt: null,
               date: { gte: new Date() }, // We can keep filters in the count
             },
           }
@@ -147,13 +174,452 @@ export async function getUsersWithEvents() {
     }
   });
 
-  return users
-      //Filter by the events count
-    .filter((user) => user._count.createdEvents > 0)
-    .map((user) => ({
-      ...user,
-      role: user.role as RolesForEvents,
-    }));
+  return users.map((user) => ({
+    ...user,
+    role: user.role as RolesForEvents,
+  }));
+}
+
+export type AdminOverviewGrossRevenueByCurrency = {
+  currency: string
+  amountCents: number
+  paidOrdersSucceeded: number
+}
+
+export type AdminOverviewSnapshot = {
+  upcomingActiveEvents: number
+  paidOrdersSucceeded: number
+  grossBookedRevenueByCurrency: AdminOverviewGrossRevenueByCurrency[]
+}
+
+export type AdminSelectedUserGrossRevenueByCurrency = {
+  currency: string
+  amountCents: number
+}
+
+export type AdminSelectedUserWorkspaceStatsSnapshot = {
+  upcomingEvents: number
+  paidOrdersSucceeded: number
+  grossBookedRevenueByCurrency: AdminSelectedUserGrossRevenueByCurrency[]
+  refundsAttention: number
+}
+
+export type AdminOverviewTimeSeriesPoint = {
+  date: string
+  paidOrdersSucceeded: number
+  refundRequestsCreated: number
+  grossBookedRevenueByCurrency: Record<string, number>
+}
+
+export type AdminOverviewTimeSeriesSnapshot = {
+  points: AdminOverviewTimeSeriesPoint[]
+  availableCurrencies: string[]
+  defaultCurrency: string | null
+}
+
+export type OrganizerOverviewGrossRevenueByCurrency = {
+  currency: string
+  amountCents: number
+  paidOrdersSucceeded: number
+}
+
+export type OrganizerOverviewSnapshot = {
+  upcomingEvents: number
+  upcomingPaidEvents: number
+  paidOrdersSucceeded: number
+  grossBookedRevenueByCurrency: OrganizerOverviewGrossRevenueByCurrency[]
+}
+
+export type OrganizerOverviewTimeSeriesPoint = {
+  date: string
+  paidOrdersSucceeded: number
+  refundRequestsCreated: number
+  grossBookedRevenueByCurrency: Record<string, number>
+}
+
+export type OrganizerOverviewTimeSeriesSnapshot = {
+  points: OrganizerOverviewTimeSeriesPoint[]
+  availableCurrencies: string[]
+  defaultCurrency: string | null
+}
+
+function toUtcDateKey(value: Date): string {
+  return value.toISOString().slice(0, 10)
+}
+
+export async function getAdminOverviewSnapshot(): Promise<AdminOverviewSnapshot> {
+  const [upcomingActiveEvents, paidOrdersSucceeded, grossBookedRevenueRows] =
+    await Promise.all([
+      prisma.event.count({
+        where: {
+          archivedAt: null,
+          date: { gte: new Date() },
+        },
+      }),
+      prisma.payment.count({
+        where: {
+          status: PaymentStatus.succeeded,
+          amountCents: { gt: 0 },
+          event: { isPaid: true },
+        },
+      }),
+      prisma.payment.groupBy({
+        by: ['currency'],
+        where: {
+          status: PaymentStatus.succeeded,
+          amountCents: { gt: 0 },
+          event: { isPaid: true },
+        },
+        _sum: {
+          amountCents: true,
+        },
+        _count: {
+          _all: true,
+        },
+      }),
+    ])
+
+  const grossBookedRevenueByCurrency = grossBookedRevenueRows
+    .map((row) => ({
+      currency: row.currency,
+      amountCents: row._sum.amountCents ?? 0,
+      paidOrdersSucceeded: row._count._all,
+    }))
+    .filter((row) => row.amountCents > 0)
+    .sort((a, b) => b.amountCents - a.amountCents)
+
+  return {
+    upcomingActiveEvents,
+    paidOrdersSucceeded,
+    grossBookedRevenueByCurrency,
+  }
+}
+
+export async function getAdminOverviewTimeSeriesSnapshot(
+  input?: { days?: number }
+): Promise<AdminOverviewTimeSeriesSnapshot> {
+  const maxDays = 90
+  const minDays = 7
+  const requestedDays = input?.days ?? maxDays
+  const days = Math.min(maxDays, Math.max(minDays, Math.trunc(requestedDays)))
+
+  const todayUtc = new Date()
+  todayUtc.setUTCHours(0, 0, 0, 0)
+  const startUtc = new Date(todayUtc)
+  startUtc.setUTCDate(todayUtc.getUTCDate() - (days - 1))
+
+  const points = new Map<string, AdminOverviewTimeSeriesPoint>()
+  for (let offset = 0; offset < days; offset += 1) {
+    const day = new Date(startUtc)
+    day.setUTCDate(startUtc.getUTCDate() + offset)
+    const key = toUtcDateKey(day)
+    points.set(key, {
+      date: key,
+      paidOrdersSucceeded: 0,
+      refundRequestsCreated: 0,
+      grossBookedRevenueByCurrency: {},
+    })
+  }
+
+  const [paymentRows, refundRows] = await Promise.all([
+    prisma.payment.findMany({
+      where: {
+        status: PaymentStatus.succeeded,
+        amountCents: { gt: 0 },
+        event: { isPaid: true },
+        createdAt: { gte: startUtc },
+      },
+      select: {
+        createdAt: true,
+        amountCents: true,
+        currency: true,
+      },
+    }),
+    prisma.refundRequest.findMany({
+      where: {
+        createdAt: { gte: startUtc },
+      },
+      select: {
+        createdAt: true,
+      },
+    }),
+  ])
+
+  const currencyTotals = new Map<string, number>()
+
+  for (const payment of paymentRows) {
+    const dateKey = toUtcDateKey(payment.createdAt)
+    const point = points.get(dateKey)
+    if (!point) continue
+
+    const currency = payment.currency.toLowerCase()
+    point.paidOrdersSucceeded += 1
+    point.grossBookedRevenueByCurrency[currency] =
+      (point.grossBookedRevenueByCurrency[currency] ?? 0) + payment.amountCents
+    currencyTotals.set(currency, (currencyTotals.get(currency) ?? 0) + payment.amountCents)
+  }
+
+  for (const refund of refundRows) {
+    const dateKey = toUtcDateKey(refund.createdAt)
+    const point = points.get(dateKey)
+    if (!point) continue
+
+    point.refundRequestsCreated += 1
+  }
+
+  const availableCurrencies = Array.from(currencyTotals.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([currency]) => currency)
+
+  return {
+    points: Array.from(points.values()),
+    availableCurrencies,
+    defaultCurrency: availableCurrencies[0] ?? null,
+  }
+}
+
+export async function getOrganizerOverviewSnapshot(
+  organizerClerkId: string
+): Promise<OrganizerOverviewSnapshot> {
+  const normalizedOrganizerClerkId = organizerClerkId.trim()
+  if (!normalizedOrganizerClerkId) {
+    throw new Error('No organizer ID was provided')
+  }
+
+  const [upcomingEvents, upcomingPaidEvents, paidOrdersSucceeded, grossBookedRevenueRows] =
+    await Promise.all([
+      prisma.event.count({
+        where: {
+          createdBy: normalizedOrganizerClerkId,
+          archivedAt: null,
+          date: { gte: new Date() },
+        },
+      }),
+      prisma.event.count({
+        where: {
+          createdBy: normalizedOrganizerClerkId,
+          archivedAt: null,
+          isPaid: true,
+          date: { gte: new Date() },
+        },
+      }),
+      prisma.payment.count({
+        where: {
+          status: PaymentStatus.succeeded,
+          amountCents: { gt: 0 },
+          event: {
+            isPaid: true,
+            createdBy: normalizedOrganizerClerkId,
+          },
+        },
+      }),
+      prisma.payment.groupBy({
+        by: ['currency'],
+        where: {
+          status: PaymentStatus.succeeded,
+          amountCents: { gt: 0 },
+          event: {
+            isPaid: true,
+            createdBy: normalizedOrganizerClerkId,
+          },
+        },
+        _sum: {
+          amountCents: true,
+        },
+        _count: {
+          _all: true,
+        },
+      }),
+    ])
+
+  const grossBookedRevenueByCurrency = grossBookedRevenueRows
+    .map((row) => ({
+      currency: row.currency,
+      amountCents: row._sum.amountCents ?? 0,
+      paidOrdersSucceeded: row._count._all,
+    }))
+    .filter((row) => row.amountCents > 0)
+    .sort((a, b) => b.amountCents - a.amountCents)
+
+  return {
+    upcomingEvents,
+    upcomingPaidEvents,
+    paidOrdersSucceeded,
+    grossBookedRevenueByCurrency,
+  }
+}
+
+export async function getOrganizerOverviewTimeSeriesSnapshot(
+  organizerClerkId: string,
+  input?: { days?: number }
+): Promise<OrganizerOverviewTimeSeriesSnapshot> {
+  const normalizedOrganizerClerkId = organizerClerkId.trim()
+  if (!normalizedOrganizerClerkId) {
+    throw new Error('No organizer ID was provided')
+  }
+
+  const maxDays = 90
+  const minDays = 7
+  const requestedDays = input?.days ?? 30
+  const days = Math.min(maxDays, Math.max(minDays, Math.trunc(requestedDays)))
+
+  const todayUtc = new Date()
+  todayUtc.setUTCHours(0, 0, 0, 0)
+  const startUtc = new Date(todayUtc)
+  startUtc.setUTCDate(todayUtc.getUTCDate() - (days - 1))
+
+  const points = new Map<string, OrganizerOverviewTimeSeriesPoint>()
+  for (let offset = 0; offset < days; offset += 1) {
+    const day = new Date(startUtc)
+    day.setUTCDate(startUtc.getUTCDate() + offset)
+    const key = toUtcDateKey(day)
+    points.set(key, {
+      date: key,
+      paidOrdersSucceeded: 0,
+      refundRequestsCreated: 0,
+      grossBookedRevenueByCurrency: {},
+    })
+  }
+
+  const [paymentRows, refundRows] = await Promise.all([
+    prisma.payment.findMany({
+      where: {
+        status: PaymentStatus.succeeded,
+        amountCents: { gt: 0 },
+        event: {
+          isPaid: true,
+          createdBy: normalizedOrganizerClerkId,
+        },
+        createdAt: { gte: startUtc },
+      },
+      select: {
+        createdAt: true,
+        amountCents: true,
+        currency: true,
+      },
+    }),
+    prisma.refundRequest.findMany({
+      where: {
+        createdAt: { gte: startUtc },
+        payment: {
+          event: {
+            createdBy: normalizedOrganizerClerkId,
+          },
+        },
+      },
+      select: {
+        createdAt: true,
+      },
+    }),
+  ])
+
+  const currencyTotals = new Map<string, number>()
+
+  for (const payment of paymentRows) {
+    const dateKey = toUtcDateKey(payment.createdAt)
+    const point = points.get(dateKey)
+    if (!point) continue
+
+    const currency = payment.currency.toLowerCase()
+    point.paidOrdersSucceeded += 1
+    point.grossBookedRevenueByCurrency[currency] =
+      (point.grossBookedRevenueByCurrency[currency] ?? 0) + payment.amountCents
+    currencyTotals.set(currency, (currencyTotals.get(currency) ?? 0) + payment.amountCents)
+  }
+
+  for (const refund of refundRows) {
+    const dateKey = toUtcDateKey(refund.createdAt)
+    const point = points.get(dateKey)
+    if (!point) continue
+
+    point.refundRequestsCreated += 1
+  }
+
+  const availableCurrencies = Array.from(currencyTotals.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([currency]) => currency)
+
+  return {
+    points: Array.from(points.values()),
+    availableCurrencies,
+    defaultCurrency: availableCurrencies[0] ?? null,
+  }
+}
+
+export async function getAdminSelectedUserWorkspaceStats(
+  userClerkId: string
+): Promise<AdminSelectedUserWorkspaceStatsSnapshot> {
+  const normalizedUserClerkId = userClerkId.trim()
+  if (!normalizedUserClerkId) {
+    throw new Error('No selected user ID was provided')
+  }
+
+  const [upcomingEvents, paidOrdersSucceeded, grossBookedRevenueRows, refundsAttention] =
+    await Promise.all([
+      prisma.event.count({
+        where: {
+          createdBy: normalizedUserClerkId,
+          archivedAt: null,
+          date: { gte: new Date() },
+        },
+      }),
+      prisma.payment.count({
+        where: {
+          status: PaymentStatus.succeeded,
+          amountCents: { gt: 0 },
+          event: {
+            isPaid: true,
+            createdBy: normalizedUserClerkId,
+          },
+        },
+      }),
+      prisma.payment.groupBy({
+        by: ['currency'],
+        where: {
+          status: PaymentStatus.succeeded,
+          amountCents: { gt: 0 },
+          event: {
+            isPaid: true,
+            createdBy: normalizedUserClerkId,
+          },
+        },
+        _sum: {
+          amountCents: true,
+        },
+      }),
+      prisma.refundRequest.count({
+        where: {
+          status: {
+            in: [
+              RefundRequestStatus.requested,
+              RefundRequestStatus.processing,
+              RefundRequestStatus.approved,
+              RefundRequestStatus.failed,
+            ],
+          },
+          payment: {
+            event: {
+              createdBy: normalizedUserClerkId,
+            },
+          },
+        },
+      }),
+    ])
+
+  const grossBookedRevenueByCurrency = grossBookedRevenueRows
+    .map((row) => ({
+      currency: row.currency,
+      amountCents: row._sum.amountCents ?? 0,
+    }))
+    .filter((row) => row.amountCents > 0)
+    .sort((a, b) => b.amountCents - a.amountCents)
+
+  return {
+    upcomingEvents,
+    paidOrdersSucceeded,
+    grossBookedRevenueByCurrency,
+    refundsAttention,
+  }
 }
 
 
@@ -171,19 +637,17 @@ export async function getPopularEventsByOrganizer(
   if (!clerkId) throw new Error("No organizer ID was provided");
   if (limit <= 0) return [];
 
-    //After this we don't need to filter by futures
-   await deleteExpiredEvents();
-
-
   const events = await prisma.event.findMany({
     where: {
       createdBy: clerkId,
-      rsvps: { some: { status: RSVPStatus.confirmed } }, // ≥1 confirmado
+      archivedAt: null,
+      date: { gte: new Date() },
+      rsvps: { some: { ...CURRENTLY_ATTENDING_RSVP_WHERE } }, // ≥1 attending
     },
     include: {
       _count: {
         select: {
-          rsvps: { where: { status: RSVPStatus.confirmed } },
+          rsvps: { where: { ...CURRENTLY_ATTENDING_RSVP_WHERE } },
         },
       },
     },
@@ -208,7 +672,6 @@ export async function getMonthlyEventsByOrganizer(
 ) {
   if (!clerkId) throw new Error("No organizer ID was provided");
 
-  await deleteExpiredEvents();
 
   const now = new Date();
 
@@ -223,6 +686,7 @@ export async function getMonthlyEventsByOrganizer(
   const events = await prisma.event.findMany({
     where: {
       createdBy: clerkId,
+      archivedAt: null,
       eventLocalDateKey: { gte: minKey, lte: monthEndKey },
     },
     orderBy: [
@@ -238,7 +702,6 @@ export async function getMonthlyEventsByOrganizer(
 
 export async function getEventAttendees(eventId: string) {
     if(!eventId) throw new Error('Event ID is required to fetch attendees')
-    await deleteExpiredEvents();
     return await prisma.rSVP.findMany({
         where: {eventId},
         select: {
@@ -285,13 +748,14 @@ export async function getEventsWithDetails(
         },
       },
       rsvps: {
-        where: { status: RSVPStatus.confirmed },
+        where: { ...CURRENTLY_ATTENDING_RSVP_WHERE },
         select: {
           id: true,
           createdAt: true,
           userId: true,
           eventId: true,
           status: true,
+          attendanceEntitlementStatus: true,
           updatedAt: true,
           reminderPreferenceType: true,
           reminderOffsetMinutes: true,
@@ -336,7 +800,7 @@ export async function getEventWithRsvps(eventId: string): Promise<EventWithCreat
  * - Optionally reads the viewer TZ cookie and echoes it back (to mirror Home SSR + rehydration pattern).
  *
  * Notes:
- * - We do NOT call deleteExpiredEvents() here to keep reads cheap; we already clean on key actions/cron.
+ * - Reads stay non-destructive: we never archive or mutate events while listing them.
  * - Return raw dates (ISO). Format in the component layer (viewer TZ vs event TZ).
  */
 export async function getUserUpcomingEvents(
@@ -365,11 +829,12 @@ export async function getUserUpcomingEvents(
 
   const events = await prisma.event.findMany({
     where: {
+      archivedAt: null,
       date: { gte: now }, // future-only (UTC)
       rsvps: {
         some: {
           userId: userClerkId,
-          status: 'confirmed', // pending→confirmed is immediate today; explicit for clarity
+          ...CURRENTLY_ATTENDING_RSVP_WHERE,
         },
       },
     },
@@ -394,9 +859,13 @@ export async function getUserUpcomingEvents(
       },
       // Include ONLY the current user's RSVP (contains reminder fields we need)
       rsvps: {
-        where: { userId: userClerkId },
+        where: {
+          userId: userClerkId,
+          ...CURRENTLY_ATTENDING_RSVP_WHERE,
+        },
         select: {
           status: true,
+          attendanceEntitlementStatus: true,
           reminderPreferenceType: true,
           reminderOffsetMinutes: true,
           reminderScheduledAt: true,
@@ -426,8 +895,11 @@ export async function getUserUpcomingRsvpCount(userClerkId: string) {
   return prisma.rSVP.count({
     where: {
       userId: userClerkId,
-      status: RSVPStatus.confirmed,
-      event: { date: { gte: new Date() } },
+      ...CURRENTLY_ATTENDING_RSVP_WHERE,
+      event: {
+        archivedAt: null,
+        date: { gte: new Date() },
+      },
     },
   });
 }
@@ -443,6 +915,7 @@ export interface HomePageData {
   currentLocation?: string;
   currentCreator?: string;
   currentDate?: string;
+  currentPaid?: EventPaidFilterParam;
   upcomingEvents: EventWithCreatorAndRsvps[];
   featuredEvents: EventWithCreatorAndRsvps[];
   initialMainListPayload: {
@@ -471,7 +944,6 @@ export interface HomePageData {
 export async function getHomePageData(
   resolvedSearchParams: { [key: string]: string | string[] | undefined }
 ): Promise<HomePageData> {
-  await deleteExpiredEvents();
 
   console.log("[SERVER - getHomePageData] ResolvedSearchParams:", resolvedSearchParams); // LOG 1
 
@@ -488,17 +960,23 @@ export async function getHomePageData(
   const currentLocation       = getSingleSearchParam(resolvedSearchParams.location);
   const currentCreator        = getSingleSearchParam(resolvedSearchParams.creator);
   const currentDate           = getSingleSearchParam(resolvedSearchParams.date);
+  const currentPaid           = parseEventPaidFilterParam(getSingleSearchParam(resolvedSearchParams.paid));
 
   // Viewer TZ: from canonic cookie
   const viewTz = await getViewerTzFromCookie();
 
   console.log("[SERVER - getHomePageData] Parsed Filters:", {
-    currentSearchTerm, currentCategory, currentLocation, currentCreator, currentDate
+    currentSearchTerm, currentCategory, currentLocation, currentCreator, currentDate, currentPaid
   }); // LOG 2
 
   // Search mode = any filter present (search/category/location/creator/date)
   const isSearchMode =
-    !!currentSearchTerm || !!currentCategory || !!currentLocation || !!currentCreator || !!currentDate;
+    !!currentSearchTerm ||
+    !!currentCategory ||
+    !!currentLocation ||
+    !!currentCreator ||
+    !!currentDate ||
+    currentPaid !== 'all';
 
   // -----------------------------
   // Carousels are only fetched in HOME (no filters)
@@ -509,12 +987,19 @@ export async function getHomePageData(
 
   if (!isSearchMode) {
     upcomingEvents = await getEventsWithDetails({
-      where: { date: { gte: today, lt: startOfDay(addDays(today, 7)) } }, // next 7 days
+      where: {
+        archivedAt: null,
+        date: { gte: today, lt: startOfDay(addDays(today, 7)) },
+      }, // next 7 days
       orderBy: [{ date: "asc" }, { id: "asc" }],
     });
 
     featuredEvents = await getEventsWithDetails({
-      where: { date: { gte: today }, OR: [{ featured: true }, { featuredByAdmin: true }] },
+      where: {
+        archivedAt: null,
+        date: { gte: today },
+        OR: [{ featured: true }, { featuredByAdmin: true }],
+      },
       orderBy: [{ date: "asc" }, { id: "asc" }],
       take: FEATURED_LIMIT,
     });
@@ -545,7 +1030,9 @@ export async function getHomePageData(
     // -----------------------------
     // HOME (no filters): SSR seed
     // -----------------------------
-    const mainListWhereClause: Prisma.EventWhereInput = {};
+    const mainListWhereClause: Prisma.EventWhereInput = {
+      archivedAt: null,
+    };
 
     // Date window for the SSR seed:
     // - If a date sneaks in (shouldn't happen in HOME), use eventLocalDateKey for robustness.
@@ -628,6 +1115,7 @@ export async function getHomePageData(
     currentLocation,
     currentCreator,
     currentDate,
+    currentPaid: currentPaid === 'all' ? undefined : currentPaid,
     upcomingEvents,
     featuredEvents,
     initialMainListPayload,

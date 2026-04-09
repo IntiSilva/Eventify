@@ -1,12 +1,21 @@
 import { EmailLayout } from "./EmailLayout";
-import { Logo, Title, P, InfoRow, FooterNote } from "./ui";
+import {
+  Logo,
+  Title,
+  Subtitle,
+  P,
+  Hr,
+  InfoRow,
+  PrimaryButton,
+  FooterNote,
+} from "./ui";
 
 export interface Reminder48hEmailProps {
   eventName: string;
   eventDate: string;
   eventLocation: string;
   username: string;
-  // eventUrl?: string;
+  eventUrl?: string;
 }
 
 export const Reminder48hEmail = ({
@@ -14,32 +23,34 @@ export const Reminder48hEmail = ({
   eventDate,
   eventLocation,
   username,
-  // eventUrl = "https://tu-app.com", // keep your default if you still need it
+  eventUrl,
 }: Reminder48hEmailProps) => (
-  <EmailLayout preview={`Reminder: ${eventName} starts in 48 hours`}>
+  <EmailLayout preview={`In 48 hours • ${eventName}`}>
     <Logo />
-    <Title>Hi {username}!</Title>
+
+    <Title align="center" size={28}>48-hour reminder</Title>
 
     <P>
-      Just a friendly reminder that the event you registered for,
-      <strong> {eventName}</strong>, is coming up soon!
+      Hi {username}, your event is coming up soon. Here are the details at a
+      glance.
     </P>
 
-    <InfoRow label="Date" value={eventDate} />
+    <Hr />
+
+    <Subtitle>Event details</Subtitle>
+    <InfoRow label="Event" value={eventName} />
+    <InfoRow label="Date & time" value={eventDate} />
     <InfoRow label="Location" value={eventLocation} />
 
-    {/* You said you prefer to remove the CTA button for now. If you ever
-        want to keep a textual link, uncomment this:
-
     {eventUrl && (
-      <P muted>
-        View details:{" "}
-        <a href={eventUrl} style={{ color: "#a1a1aa" }}>
-          {eventUrl}
-        </a>
-      </P>
+      <div style={{ textAlign: "center", marginTop: 16 }}>
+        <PrimaryButton href={eventUrl}>View event details</PrimaryButton>
+      </div>
     )}
-    */}
+
+    <P muted style={{ textAlign: "center", marginTop: 12 }}>
+      Can&apos;t make it? Update your attendance status from the event page.
+    </P>
 
     <FooterNote>Eventify Platform • © {new Date().getFullYear()}</FooterNote>
   </EmailLayout>

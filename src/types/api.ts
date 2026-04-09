@@ -1,5 +1,8 @@
 // src/types/api.ts
 import type { EditableEvent, EventWithCreatorAndRsvps } from "@/types/event";
+import type { AdminSelectedUserWorkspaceStatsSnapshot } from "@/lib/data";
+import type { ViewerTicketState } from "@/types/payments/stripe";
+import type { RefundRequestStatus } from "@/generated/prisma";
 
 /* =============================================================================
  * Shared API envelopes
@@ -92,7 +95,19 @@ export type EventsConfirmedCountResponse =
  * ============================================================================= */
 
 // GET /api/organizer/events
-export type OrganizerEventsResponse = PaginatedApiResponse<EditableEvent>;
+export type OrganizerEventsContext = {
+  hasAnyEventsEver: boolean;
+};
+
+export type OrganizerEventsPayload<TItem> = {
+  data: TItem[];
+  metadata: PaginatedMetadata;
+  context: OrganizerEventsContext;
+};
+
+export type OrganizerEventsResponse =
+  | ({ success: true } & OrganizerEventsPayload<EditableEvent>)
+  | ApiErrorResponse;
 
 // GET /api/organizer/monthly
 export type OrganizerMonthlyEventsResponse = ApiResponse<EditableEvent[]>;
@@ -114,6 +129,10 @@ export type OrganizerPopularEventsResponse =
 // GET /api/admin/events/[userId]
 export type AdminEventsResponse = PaginatedApiResponse<EditableEvent>;
 
+// GET /api/admin/users/[userId]/workspace-stats
+export type AdminSelectedUserWorkspaceStatsResponse =
+  ApiResponse<AdminSelectedUserWorkspaceStatsSnapshot>;
+
 /* =============================================================================
  * Agenda endpoints
  * ============================================================================= */
@@ -121,6 +140,40 @@ export type AdminEventsResponse = PaginatedApiResponse<EditableEvent>;
 // GET /api/agenda/upcoming-events
 export type AgendaUpcomingEventsResponse =
   ApiResponse<EventWithCreatorAndRsvps[]>;
+
+/* =============================================================================
+ * Viewer ticket endpoints
+ * ============================================================================= */
+
+export type ViewerTicketRecord = {
+  paymentId: string;
+  event: {
+    id: string;
+    title: string;
+    date: string; // ISO
+    location: string;
+    eventTimeZone: string;
+  };
+  payment: {
+    amountCents: number;
+    currency: string;
+    paidAt: string; // ISO
+  };
+  ticketState: Exclude<ViewerTicketState, "none">;
+  refund: {
+    status: RefundRequestStatus;
+    requestedAt?: string; // ISO
+    updatedAt?: string; // ISO
+    succeededAt?: string; // ISO
+  } | null;
+};
+
+export type ViewerTicketsPayload = {
+  tickets: ViewerTicketRecord[];
+};
+
+// GET /api/payments/my-tickets
+export type ViewerMyTicketsResponse = ApiResponse<ViewerTicketsPayload>;
 
 /* =============================================================================
  * Search suggestions endpoints

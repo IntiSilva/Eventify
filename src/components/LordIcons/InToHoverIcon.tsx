@@ -27,6 +27,7 @@ interface InToHoverIconProps {
   playTrigger?: boolean;
   onActionComplete?: () => void;
   introDelay?: number;
+  onIconReady?: () => void;
 }
 
 export default function InToHoverIcon({
@@ -45,6 +46,7 @@ export default function InToHoverIcon({
   playTrigger = false,
   onActionComplete,
   introDelay = 0,
+  onIconReady,
 }: InToHoverIconProps) {
   const [showHoverStateIcon, setShowHoverStateIcon] = useState(false);
   const [isHoverAnimating, setIsHoverAnimating] = useState(false);
@@ -53,6 +55,13 @@ export default function InToHoverIcon({
   const [isMobileActionPlaying, setIsMobileActionPlaying] = useState(false);
   const [playIntro, setPlayIntro] = useState(false);
   const prevHoveredRef = useRef(false);
+  const hasNotifiedReadyRef = useRef(false);
+
+  const notifyIconReady = () => {
+    if (hasNotifiedReadyRef.current) return;
+    hasNotifiedReadyRef.current = true;
+    onIconReady?.();
+  };
 
   const isControlledExternally = typeof isParentHovered === 'boolean';
   const isHoverActive = isControlledExternally ? isParentHovered : isSelfHovered;
@@ -111,7 +120,14 @@ export default function InToHoverIcon({
     if (!actionIcon) {
       return (
         <div className={cn('relative', className)} style={{ width: size, height: size }} onClick={onClick}>
-          <AnimatedIcon icon={inIcon} size={size} state="in" colors={inColors} play={playIntro} />
+          <AnimatedIcon
+            icon={inIcon}
+            size={size}
+            state="in"
+            colors={inColors}
+            play={playIntro}
+            onReady={notifyIconReady}
+          />
         </div>
       );
     }
@@ -138,7 +154,15 @@ export default function InToHoverIcon({
             }}
           />
         ) : (
-          <AnimatedIcon key="in-icon" icon={inIcon} size={size} colors={inColors} state="in" play={playIntro} />
+          <AnimatedIcon
+            key="in-icon"
+            icon={inIcon}
+            size={size}
+            colors={inColors}
+            state="in"
+            play={playIntro}
+            onReady={notifyIconReady}
+          />
         )}
       </div>
     );
@@ -149,7 +173,15 @@ export default function InToHoverIcon({
     <div className={cn('relative', className)} style={{ width: size, height: size }} {...selfHoverHandlers} onClick={onClick}>
       {/* INITIAL state */}
       <div className={cn('absolute inset-0', showHoverStateIcon || isActionAnimating ? 'opacity-0' : 'opacity-100')}>
-        <AnimatedIcon icon={inIcon} size={size} state="in" colors={inColors} onComplete={() => setShowHoverStateIcon(true)} play={playIntro} />
+        <AnimatedIcon
+          icon={inIcon}
+          size={size}
+          state="in"
+          colors={inColors}
+          onComplete={() => setShowHoverStateIcon(true)}
+          play={playIntro}
+          onReady={notifyIconReady}
+        />
       </div>
 
       {/* HOVER state */}

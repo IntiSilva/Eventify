@@ -294,6 +294,8 @@ export default function SimpleEventCard({
 
   /* ---------- Admin toggle --------------------------------------------- */
   const badgeState = getBadgeState(event);
+  const useCompactInlineLowerBadges =
+    showAdminControls && isDesktop && badgeState === 'both';
 
   const handleFeaturedChange = async (current: boolean) => {
     startTransition(async () => {
@@ -379,18 +381,26 @@ export default function SimpleEventCard({
 
           {/* Right-side badges stack (stacked under category-level area) */}
           <div className="absolute z-20 right-1.5 -top-4 md:-top-3 flex flex-col items-end gap-1">
-            <PricingBadge isPaid={Boolean(event.isPaid)} variant={isDesktop ? 'list' : 'carousel'} className="max-w-[6.5rem]" />
+            <PricingBadge
+              isPaid={Boolean(event.isPaid)}
+              eventStart={event.date}
+              variant={isDesktop ? 'list' : 'carousel'}
+              className="max-w-[6.5rem]"
+            />
           </div>
 
           {/* ---------- Featured / Admin badges --------------------------- */}
           {badgeState !== 'none' && (
             <div
-              className={cn('absolute z-10 flex', {
-                '-bottom-9 left-1.5 flex-col gap-y-1 md:-bottom-4 md:gap-y-1.5':
-                  badgeState === 'both',
-                '-bottom-9 left-1.5 md:-bottom-4':
-                  badgeState === 'featured' || badgeState === 'admin',
-              })}
+              className={cn(
+                'absolute z-10 -bottom-9 left-1.5 md:-bottom-4',
+                useCompactInlineLowerBadges
+                  ? 'flex max-w-[calc(100%-0.75rem)] flex-row flex-wrap items-end gap-x-1 gap-y-1 md:gap-x-1.5'
+                  : 'flex',
+                !useCompactInlineLowerBadges &&
+                  badgeState === 'both' &&
+                  'flex-col gap-y-1 md:gap-y-1.5',
+              )}
             >
               {(badgeState === 'admin' || badgeState === 'both') && (
                 <div

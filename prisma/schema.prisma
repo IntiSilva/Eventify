@@ -54,6 +54,12 @@ enum RSVPStatus {
   canceled
 }
 
+enum RSVPAttendanceEntitlementStatus {
+  active
+  refund_pending_hold
+  revoked_refunded
+}
+
 model User {
   id        String    @id @default(cuid())
   email     String    @unique
@@ -71,6 +77,13 @@ model User {
   hasImage  Boolean?
 
   phoneNumber String? @unique @db.VarChar(30)
+
+  stripeConnectAccountId            String?   @unique
+  stripeConnectChargesEnabled       Boolean   @default(false)
+  stripeConnectPayoutsEnabled       Boolean   @default(false)
+  stripeConnectDetailsSubmitted     Boolean   @default(false)
+  stripeConnectOnboardingCompletedAt DateTime?
+  stripeConnectStatusUpdatedAt      DateTime?
 
   rsvps     RSVP[]
   payments  Payment[]
@@ -108,17 +121,42 @@ model Event {
   isPaid      Boolean @default(false)
   priceCents  Int?
   currency    String? @db.VarChar(3)
+  currentPriceVersionId String? @unique
+  archivedAt  DateTime?
 
   rsvps       RSVP[]
   payments    Payment[]
+  priceVersions EventPriceVersion[] @relation("EventAllPriceVersions")
+  currentPriceVersion EventPriceVersion? @relation("EventCurrentPriceVersion", fields: [currentPriceVersionId], references: [id], onDelete: SetNull)
   createdAt   DateTime @default(now())
 
 
   @@index([normalizedTitle])
   @@index([normalizedLocation])
-  //Index for the cleanup function
+  // Index for event time-based list filters
   @@index([date])
   @@index([eventLocalDateKey])
+}
+
+model EventPriceVersion {
+  id          String   @id @default(cuid())
+  eventId      String
+  versionNumber Int
+  isPaid       Boolean
+  amountCents  Int?
+  currency     String? @db.VarChar(3)
+  createdBy    String?
+  effectiveAt  DateTime @default(now())
+  supersededAt DateTime?
+  createdAt    DateTime @default(now())
+
+  event Event @relation("EventAllPriceVersions", fields: [eventId], references: [id], onDelete: Cascade)
+  currentForEvent Event? @relation("EventCurrentPriceVersion")
+  payments Payment[]
+
+  @@unique([eventId, versionNumber])
+  @@index([eventId, createdAt])
+  @@index([eventId, effectiveAt])
 }
 
 model RSVP {
@@ -126,6 +164,7 @@ model RSVP {
   userId  String
   eventId String
   status  RSVPStatus @default(pending)
+  attendanceEntitlementStatus RSVPAttendanceEntitlementStatus @default(active)
 
   user  User  @relation(fields: [userId], references: [clerkId], onDelete: Cascade)
   event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
@@ -146,24 +185,89 @@ enum PaymentStatus {
   pending
   succeeded
   failed
+  canceled
+}
+
+enum RefundRequestStatus {
+  requested
+  approved
+  rejected
+  processing
+  succeeded
+  failed
+  canceled
+}
+
+enum RefundRequestSource {
+  USER_REQUEST
+  MANUAL_OVERRIDE
+  SYSTEM_COMPENSATION
+}
+
+enum PaymentPayoutTarget {
+  platform
+  organizer
 }
 
 model Payment {
   id                    String        @id @default(cuid())
   stripePaymentIntentId String        @unique
   status                PaymentStatus @default(pending)
+  payoutTarget          PaymentPayoutTarget @default(platform)
   amountCents           Int
   currency              String        @db.VarChar(3)
+  destinationAccountId  String?
+  transferGroup         String?
+  applicationFeeAmount  Int?
+  stripeChargeId        String?
+  stripeBalanceTransactionId String?
+  stripeTransferId      String?
+  stripeApplicationFeeId String?
+  ticketEmailSentAt     DateTime?
   eventId               String
   userId                String
   rsvpId                String?
+  priceVersionId        String?
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 
   event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [clerkId], onDelete: Cascade)
   rsvp  RSVP? @relation(fields: [rsvpId], references: [id], onDelete: SetNull)
+  priceVersion EventPriceVersion? @relation(fields: [priceVersionId], references: [id], onDelete: SetNull)
+  refundRequest RefundRequest?
 
   @@index([eventId])
   @@index([userId])
+  @@index([priceVersionId])
+  @@index([eventId, status])
+  @@index([eventId, userId, status])
+}
+
+model RefundRequest {
+  id                String              @id @default(cuid())
+  paymentId         String              @unique
+  requestedByUserId String
+  source            RefundRequestSource @default(USER_REQUEST)
+  reason            String?             @db.VarChar(500)
+  status            RefundRequestStatus @default(requested)
+  stripeRefundId    String?             @unique
+  refundEmailSentAt DateTime?
+  refundReference   String?             @db.VarChar(64)
+  refundReferenceType String?           @db.VarChar(64)
+  refundReferenceStatus String?         @db.VarChar(32)
+  refundSucceededAt DateTime?
+  decidedByUserId   String?
+  decidedAt         DateTime?
+  decisionNote      String?             @db.VarChar(500)
+  attemptCount      Int                 @default(0)
+  lastError         String?             @db.VarChar(1000)
+  lastAttemptAt     DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([requestedByUserId])
+  @@index([status])
 }

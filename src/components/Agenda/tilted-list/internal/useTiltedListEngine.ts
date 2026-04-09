@@ -47,6 +47,8 @@ export interface UseTiltedListEngineParams {
 
   /** If false, disable wrap-around and clamp scrolling. */
   infinite?: boolean;
+  /** If true, finite top/bottom outward wheel can handoff to page scroll. */
+  allowWheelPageEdgeRelease?: boolean;
 
   /** Extra scroll slack at the top when infinite=false (in px). */
   finiteStartSlackPx?: number;
@@ -186,6 +188,7 @@ export function useTiltedListEngine(params: UseTiltedListEngineParams): UseTilte
     searchFocusIndices,
 
     infinite = true,
+    allowWheelPageEdgeRelease = true,
     finiteStartSlackPx = 0,
     finiteEndSlackPx = 0,
   } = params;
@@ -228,6 +231,10 @@ export function useTiltedListEngine(params: UseTiltedListEngineParams): UseTilte
 }, [onClearSelection]);
 
 
+  const roRafRef = useRef<number | null>(null);
+  const lastROHeightRef = useRef(0);
+  const pendingROHeightRef = useRef<number | null>(null);
+
   // ResizeObserver: commit height changes with a micro-rAF to coalesce writes.
   useEffect(() => {
     if (!containerRef.current) return;
@@ -242,10 +249,14 @@ export function useTiltedListEngine(params: UseTiltedListEngineParams): UseTilte
     };
 
     const schedule = (hRaw: number) => {
+      pendingROHeightRef.current = hRaw;
       if (roRafRef.current != null) return;
       roRafRef.current = requestAnimationFrame(() => {
         roRafRef.current = null;
-        commit(hRaw);
+        const pending = pendingROHeightRef.current;
+        pendingROHeightRef.current = null;
+        if (pending == null) return;
+        commit(pending);
       });
     };
 
@@ -267,10 +278,9 @@ export function useTiltedListEngine(params: UseTiltedListEngineParams): UseTilte
         cancelAnimationFrame(roRafRef.current);
         roRafRef.current = null;
       }
+      pendingROHeightRef.current = null;
     };
   }, [debug, LOG]);
-  const roRafRef = useRef<number | null>(null);
-  const lastROHeightRef = useRef(0);
 
   /* ───────────────────────── Motion prefs & resolved autoplay ───────────────────────── */
 
@@ -394,6 +404,7 @@ export function useTiltedListEngine(params: UseTiltedListEngineParams): UseTilte
   const lastMoveTsRef = useRef<number | null>(null);
   const accumDyRef = useRef(0);
   const DRAG_THRESHOLD = 6;
+  const EDGE_EPS = 0.75;
 
   const inertiaVelRef = useRef(0); // px/s
   const INERTIA_DECAY = 5.0;
@@ -493,12 +504,30 @@ export function useTiltedListEngine(params: UseTiltedListEngineParams): UseTilte
 
 
     const onWheel = useCallback((e: React.WheelEvent) => {
-    // No preventDefault here: the global guard already blocks page scroll
     if (recenteringRef.current) return;
 
     // Normalize to pixels (use containerH if deltaMode = "page")
     const rawPx   = wheelDeltaInPixels(e, Math.max(1, containerH));
     const deltaPx = applyStep(rawPx, wheelFeel);
+    if (deltaPx === 0) return;
+
+    // Finite mode: at physical edges, release wheel to native page scroll
+    // so the user can exit the list zone without moving the cursor.
+    if (allowWheelPageEdgeRelease && !infinite && finiteRangeRef.current) {
+      const { minY, maxY } = finiteRangeRef.current;
+      const y = smoothYRef.current;
+      const atTopEdge = y >= (maxY - EDGE_EPS);
+      const atBottomEdge = y <= (minY + EDGE_EPS);
+      const tryingToLeaveTop = atTopEdge && deltaPx < 0;
+      const tryingToLeaveBottom = atBottomEdge && deltaPx > 0;
+      if (tryingToLeaveTop || tryingToLeaveBottom) {
+        inertiaVelRef.current = 0;
+        return;
+      }
+    }
+
+    // The list owns wheel interaction while pointer is inside its region.
+    if (e.cancelable) e.preventDefault();
 
     const velPart = wheelFeel.blend;
     const posPart = 1 - wheelFeel.blend;
@@ -513,11 +542,14 @@ export function useTiltedListEngine(params: UseTiltedListEngineParams): UseTilte
     scheduleSetTrackY();
     maybeUpdateWindow();
     ensureRunning();
-  }, [containerH, wheelFeel, scheduleSetTrackY, maybeUpdateWindow, ensureRunning, infinite, clampSmoothYFinite]);
+  }, [containerH, wheelFeel, scheduleSetTrackY, maybeUpdateWindow, ensureRunning, allowWheelPageEdgeRelease, infinite, clampSmoothYFinite, EDGE_EPS]);
 
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (isInteractiveTarget(e.target)) return;
     if (recenteringRef.current) { e.preventDefault(); return; }
+    if (e.pointerType === 'touch' && e.cancelable) {
+      e.preventDefault();
+    }
 
     pointerDownRef.current = true;
     isDraggingRef.current = false;
@@ -561,6 +593,27 @@ export function useTiltedListEngine(params: UseTiltedListEngineParams): UseTilte
       } else {
         return; // keep click “clean”
       }
+    }
+
+    // Touch + finite list: when dragging past a hard edge, hand movement back
+    // to document scroll to avoid trapping the user inside the list viewport.
+    if (e.pointerType === 'touch' && !infinite && finiteRangeRef.current) {
+      const { minY, maxY } = finiteRangeRef.current;
+      const y = smoothYRef.current;
+      const atTopEdge = y >= (maxY - EDGE_EPS);
+      const atBottomEdge = y <= (minY + EDGE_EPS);
+      const draggingOutTop = atTopEdge && dy > 0;
+      const draggingOutBottom = atBottomEdge && dy < 0;
+
+      if (draggingOutTop || draggingOutBottom) {
+        window.scrollBy({ top: -dy, behavior: 'auto' });
+        inertiaVelRef.current = 0;
+        return;
+      }
+    }
+
+    if (e.pointerType === 'touch' && e.cancelable) {
+      e.preventDefault();
     }
 
     smoothYRef.current += dy * 1.2;

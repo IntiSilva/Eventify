@@ -1,8 +1,30 @@
 import CheckoutOverlayShell from '@/components/Checkout/CheckoutOverlayShell';
 import CheckoutClient from '../../../checkout/[eventId]/CheckoutClient';
 import { auth } from '@clerk/nextjs/server';
+import Link from 'next/link';
 import { createOrReusePaymentIntentForEvent } from '@/lib/payments/intent';
 import { NotFoundError, isPaymentError } from '@/lib/payments/errors';
+
+type CheckoutLoadResult =
+  | {
+      ok: true;
+      result: Awaited<ReturnType<typeof createOrReusePaymentIntentForEvent>>;
+    }
+  | { ok: false; error: unknown };
+
+async function loadCheckoutState(
+  eventId: string,
+  userId: string
+): Promise<CheckoutLoadResult> {
+  try {
+    return {
+      ok: true,
+      result: await createOrReusePaymentIntentForEvent({ eventId, userId }),
+    };
+  } catch (error: unknown) {
+    return { ok: false, error };
+  }
+}
 
 export default async function CheckoutInterceptPage({
   params,
@@ -12,55 +34,29 @@ export default async function CheckoutInterceptPage({
   const { eventId } = await params;
   const { userId } = await auth();
 
-  // If user not signed in, show message inside overlay
   if (!userId) {
     return (
       <CheckoutOverlayShell title="Complete Ticket Payment" eventId={eventId}>
         <div className="text-lg text-zinc-300 space-y-3 py-6">
           <p>You need to sign in to complete this purchase.</p>
-          <a
+          <Link
             href="/sign-in"
             className="inline-block px-3 py-1.5 bg-white text-black rounded text-sm font-medium hover:bg-zinc-200"
           >
             Sign in
-          </a>
+          </Link>
         </div>
       </CheckoutOverlayShell>
     );
   }
 
-  try {
-    const result = await createOrReusePaymentIntentForEvent({ eventId, userId });
+  const checkoutLoad = await loadCheckoutState(eventId, userId);
 
-    if (result.state === 'PAYMENT_IN_PROGRESS') {
-      return (
-        <CheckoutOverlayShell title="Complete Ticket Payment" eventId={eventId}>
-          <CheckoutClient
-            eventId={eventId}
-            userId={userId}
-            state={result.state}
-            event={result.event}
-            clientSecret={result.clientSecret}
-            publishableKey={result.publishableKey}
-          />
-        </CheckoutOverlayShell>
-      );
-    }
-
-    // Already paid — show acknowledgement inside overlay
-    return (
-      <CheckoutOverlayShell title="Complete Ticket Payment" eventId={eventId}>
-        <div className="text-sm text-zinc-300 space-y-3 py-6">
-          <p>Your payment has already been recorded for this event.</p>
-          <p className="text-xs text-zinc-400">If your RSVP is not visible yet, it should appear shortly. You can close this dialog to continue browsing.</p>
-        </div>
-      </CheckoutOverlayShell>
-    );
-  } catch (error: unknown) {
-    const message =
-      isPaymentError(error)
-        ? error.message
-        : 'Failed to initialize payment';
+  if (!checkoutLoad.ok) {
+    const error = checkoutLoad.error;
+    const message = isPaymentError(error)
+      ? error.message
+      : 'Failed to initialize payment';
 
     const showNotFoundInfo = error instanceof NotFoundError;
 
@@ -77,5 +73,35 @@ export default async function CheckoutInterceptPage({
       </CheckoutOverlayShell>
     );
   }
-}
 
+  const result = checkoutLoad.result;
+
+  if (result.state === 'PAYMENT_IN_PROGRESS') {
+    return (
+      <CheckoutOverlayShell title="Complete Ticket Payment" eventId={eventId}>
+        <CheckoutClient
+          eventId={eventId}
+          userId={userId}
+          state={result.state}
+          event={result.event}
+          paymentIntentId={result.paymentIntentId}
+          clientSecret={result.clientSecret}
+          publishableKey={result.publishableKey}
+        />
+      </CheckoutOverlayShell>
+    );
+  }
+
+  return (
+    <CheckoutOverlayShell title="Complete Ticket Payment" eventId={eventId}>
+      <div className="text-sm text-zinc-300 space-y-3 py-6">
+        <p>Your payment has already been recorded for this event.</p>
+        <p className="text-xs text-zinc-400">
+          Attendance is only confirmed after final server validation. If the
+          event can no longer accept attendees, an automatic refund may be in
+          progress.
+        </p>
+      </div>
+    </CheckoutOverlayShell>
+  );
+}

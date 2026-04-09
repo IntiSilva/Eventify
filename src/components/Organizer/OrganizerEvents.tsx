@@ -16,6 +16,7 @@ import AnimatedCarouselArrow from '../LordIcons/AnimatedCarouselArrow';
 import { useMenu } from '@/contexts/MenuContext';
 
 import { useMediaQuery, useConfirmedCounts } from '@/lib/hooks';
+import { isCurrentlyAttendingRsvp } from '@/lib/rsvpAttendance';
 import {
   bloomItemVariants,
   gridStaggerVariants,
@@ -151,16 +152,17 @@ export default function OrganizerEvents({
 
   const url =
     `${swrKeys.organizer.list()}?` +
-    buildOrganizerQS({
-      page: currentPage,
-      limit: pageSize,
-      filters: {
-        search: filters.search || '',
-        location: filters.location || '',
-        category: filters.category || '',
-        date: filters.date || '',
-      },
-    });
+      buildOrganizerQS({
+        page: currentPage,
+        limit: pageSize,
+        filters: {
+          search: filters.search || '',
+          location: filters.location || '',
+          category: filters.category || '',
+          date: filters.date || '',
+          paid: filters.paid || 'all',
+        },
+      });
 
   let cancelled = false;
   (async () => {
@@ -319,7 +321,7 @@ export default function OrganizerEvents({
     [upsertEvents],
   );
 
-  const handleMenuDelete = useCallback(
+  const handleMenuArchive = useCallback(
     (id: string) => {
       // Without invalidating: the next read will refetch if needed
       removeEvents([id]);
@@ -337,10 +339,10 @@ export default function OrganizerEvents({
       openMenu(event.id, {
         mode: 'editable',
         onEventUpdate: handleMenuUpdate,
-        onEventDeleted: handleMenuDelete,
+        onEventArchived: handleMenuArchive,
       });
     },
-    [entityById, upsertEvents, openMenu, handleMenuUpdate, handleMenuDelete],
+    [entityById, upsertEvents, openMenu, handleMenuUpdate, handleMenuArchive],
   );
 
   // Render
@@ -370,7 +372,7 @@ export default function OrganizerEvents({
             const full = entityById.get(event.id);
             const confirmedCount = Array.isArray(full?.rsvps)
               ? full!.rsvps!.filter(
-                  (r) => r.status === RSVPStatus.confirmed,
+                  (r) => isCurrentlyAttendingRsvp(r),
                 ).length
               : counts[event.id] ?? 0;
 

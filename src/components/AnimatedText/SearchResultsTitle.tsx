@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useCallback, useRef, useState } from 'react'
 import { cn } from '@/lib/utils';
 import { formatInTimeZone } from 'date-fns-tz';
 import { enUS } from 'date-fns/locale';
-import AnimatedColorableText, { ColorableToken } from './AnimatedColorableText';
+import AnimatedColorableText, { type ColorableToken } from './AnimatedColorableText';
 import AnimatedIcon from '../LordIcons/AnimatedIcon';
 import { LoadingDotsAnimatedIcon } from '@/lib/icons';
 
@@ -13,12 +13,13 @@ export interface SearchResultsTitleProps {
   category?: string | null;
   location?: string | null;
   creator?: string | null;
-  date?: string | null;                 // ISO (YYYY-MM-DD)
+  date?: string | null; // ISO (YYYY-MM-DD)
+  paid?: 'all' | 'paid' | 'free' | null;
   creatorLabel?: 'Organized by' | 'Created by' | 'Made by';
   as?: 'h1' | 'h2' | 'h3' | 'p';
   className?: string;
   compact?: boolean;
-   /**
+  /**
    * Parent-driven: true while the results list is still fetching / pending.
    * The busy icon will only show AFTER the title animation is done.
    */
@@ -45,38 +46,45 @@ function formattedDate(date?: string | null) {
   return formatInTimeZone(utcNoon, 'UTC', 'PPP', { locale: enUS });
 }
 
-
 export default function SearchResultsTitle({
   searchTerm,
   category,
   location,
   creator,
   date,
+  paid,
   creatorLabel = 'Organized by',
   as = 'h2',
   className,
   compact = false,
   isBusy = false,
   onTitleAnimationDone,
-  busyIconSize
+  busyIconSize,
 }: SearchResultsTitleProps) {
   const base = compact ? 'text-lg font-semibold' : 'text-3xl font-bold';
-  const hasAny = !!(searchTerm || category || location || creator || date);
-
+  const paidMode = paid === 'paid' || paid === 'free' ? paid : 'all';
+  const hasAny = !!(searchTerm || category || location || creator || date || paidMode !== 'all');
 
   const tokens = useMemo<ColorableToken[]>(() => {
     const out: ColorableToken[] = [];
-
     if (!hasAny) return out;
 
     const _cat = cap(category);
     const _loc = cap(location);
     const _creator = cap(creator);
     const _date = formattedDate(date);
+    const _pricing =
+      paidMode === 'paid' ? 'Paid events' : paidMode === 'free' ? 'Free events' : null;
 
     if (searchTerm) {
       out.push({ text: 'Results for' });
-      out.push({ text: `“${searchTerm}”`, accent: true });
+      out.push({ text: `"${searchTerm}"`, accent: true });
+      if (_pricing) {
+        out.push({ text: 'among' });
+        out.push({ text: _pricing, accent: true });
+      }
+    } else if (_pricing) {
+      out.push({ text: _pricing, accent: true });
     } else {
       out.push({ text: 'Events' });
     }
@@ -87,7 +95,7 @@ export default function SearchResultsTitle({
     }
 
     if (_loc) {
-      out.push({ text: 'in' });
+      out.push({ text: 'at' });
       out.push({ text: _loc, accent: true });
     }
 
@@ -102,7 +110,7 @@ export default function SearchResultsTitle({
     }
 
     return out;
-  }, [searchTerm, category, location, creator, date, creatorLabel, hasAny]);
+  }, [searchTerm, category, location, creator, date, creatorLabel, paidMode, hasAny]);
 
   // Signature to reset "done" when filters change
   const sig = useMemo(() => {
@@ -112,27 +120,27 @@ export default function SearchResultsTitle({
       location ?? '',
       creator ?? '',
       date ?? '',
+      paidMode,
       creatorLabel,
       compact ? '1' : '0',
     ].join('|');
-  }, [searchTerm, category, location, creator, date, creatorLabel, compact]);
+  }, [searchTerm, category, location, creator, date, paidMode, creatorLabel, compact]);
 
   const doneSigRef = useRef<string>('');
   const [doneSig, setDoneSig] = useState<string>('');
 
-   
   const animDone = doneSig === sig;
 
   const handleAnimationComplete = useCallback(() => {
-  // Dedupe in case it arrives twice
-  if (doneSigRef.current === sig) return;
-  doneSigRef.current = sig;
+    // Dedupe in case it arrives twice
+    if (doneSigRef.current === sig) return;
+    doneSigRef.current = sig;
 
-  setDoneSig(sig);
-  onTitleAnimationDone?.();
-}, [sig, onTitleAnimationDone]);
+    setDoneSig(sig);
+    onTitleAnimationDone?.();
+  }, [sig, onTitleAnimationDone]);
 
- useEffect(() => {
+  useEffect(() => {
     if (hasAny) return;
 
     doneSigRef.current = '';
@@ -146,32 +154,29 @@ export default function SearchResultsTitle({
   }, [hasAny]);
 
   const showBusyIcon = hasAny && isBusy && animDone;
-  const trailingBusyAddon = showBusyIcon ? ( 
-    <>
+  const trailingBusyAddon = showBusyIcon ? (
     <span
-    className="
-      pointer-events-none
-      absolute left-full ml-2
-      bottom-0
-      translate-y-[0.1em] md:translate-y-[0.2em]
-      inline-flex items-end
-      leading-none
-    "
-    role="status"
-    aria-live="polite"
-  >
-    <AnimatedIcon
-      icon={LoadingDotsAnimatedIcon}
-      state="loop"
-      disableInternalHover
-      size={busyIconSize ?? 20}
-      colors={{primary: "#34d399"}} //Emerald-400
-      className="block"
-    />
-  </span>
-    </>
-  ): null;
-
+      className="
+        pointer-events-none
+        absolute left-full ml-2
+        bottom-0
+        translate-y-[0.1em] md:translate-y-[0.2em]
+        inline-flex items-end
+        leading-none
+      "
+      role="status"
+      aria-live="polite"
+    >
+      <AnimatedIcon
+        icon={LoadingDotsAnimatedIcon}
+        state="loop"
+        disableInternalHover
+        size={busyIconSize ?? 20}
+        colors={{ primary: '#34d399' }} // Emerald-400
+        className="block"
+      />
+    </span>
+  ) : null;
 
   if (!hasAny) return null;
 
@@ -188,7 +193,6 @@ export default function SearchResultsTitle({
           splitMode="char"
           onAnimationComplete={handleAnimationComplete}
           trailingAddon={trailingBusyAddon}
-
         />
       </div>
     </div>

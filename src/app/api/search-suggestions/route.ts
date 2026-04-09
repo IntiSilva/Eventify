@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@/generated/prisma';
+import { CURRENTLY_ATTENDING_RSVP_WHERE } from '@/lib/rsvpAttendance';
 import { normalizeStringForSearch, normalizeUsername } from '@/lib/utils';
 import { SUGGESTION_LIMIT } from '@/lib/constants';
 import { auth } from '@clerk/nextjs/server';
@@ -13,23 +14,42 @@ function isValidField(v: string | null): v is Field {
   return v === 'title' || v === 'location' || v === 'creator';
 }
 
+function isValidScope(v: string | null): v is Scope {
+  return v === 'global' || v === 'organizer' || v === 'admin' || v === 'agenda';
+}
+
 function buildScopedEventWhere(
   scope: Scope,
   clerkId?: string,
   adminUserId?: string
 ): Prisma.EventWhereInput {
   if (scope === 'organizer') {
-    return clerkId ? { createdBy: clerkId } : {};
+    if (!clerkId) {
+      throw new Error('Missing authenticated user for organizer scope');
+    }
+    return { createdBy: clerkId, archivedAt: null };
   }
   if (scope === 'admin') {
-    return adminUserId ? { createdBy: adminUserId } : {};
+    if (!adminUserId) {
+      throw new Error('Missing required userId for admin scope');
+    }
+    return { createdBy: adminUserId, archivedAt: null };
   }
   if (scope === 'agenda') {
-    return clerkId
-      ? { rsvps: { some: { userId: clerkId, status: 'confirmed' } } }
-      : {};
+    if (!clerkId) {
+      throw new Error('Missing authenticated user for agenda scope');
+    }
+    return {
+      archivedAt: null,
+      rsvps: {
+        some: {
+          userId: clerkId,
+          ...CURRENTLY_ATTENDING_RSVP_WHERE,
+        },
+      },
+    };
   }
-  return {};
+  return { archivedAt: null };
 }
 
 export async function GET(req: Request) {
@@ -37,8 +57,20 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const field = url.searchParams.get('field');
     const query = (url.searchParams.get('query') || '').trim();
-    const scope = (url.searchParams.get('scope') || 'global') as Scope;
-    const adminUserId = url.searchParams.get('userId') || undefined;
+    const rawScope = url.searchParams.get('scope');
+
+    if (rawScope !== null && !isValidScope(rawScope)) {
+      const body: ApiErrorResponse = {
+        success: false,
+        error: 'Invalid "scope" param',
+      };
+      return NextResponse.json(body, { status: 400 });
+    }
+
+    const scope: Scope = rawScope ?? 'global';
+    const adminUserId = url.searchParams.get('userId')?.trim() || undefined;
+    const { userId: clerkId, sessionClaims } = await auth();
+    const requesterRole = sessionClaims?.publicMetadata?.role;
 
     if (!isValidField(field)) {
       const body: ApiErrorResponse = {
@@ -46,6 +78,40 @@ export async function GET(req: Request) {
         error: 'Invalid "field" param',
       };
       return NextResponse.json(body, { status: 400 });
+    }
+
+    if ((scope === 'organizer' || scope === 'agenda') && !clerkId) {
+      const body: ApiErrorResponse = {
+        success: false,
+        error: 'Unauthorized',
+      };
+      return NextResponse.json(body, { status: 401 });
+    }
+
+    if (scope === 'admin') {
+      if (!clerkId) {
+        const body: ApiErrorResponse = {
+          success: false,
+          error: 'Unauthorized',
+        };
+        return NextResponse.json(body, { status: 401 });
+      }
+
+      if (requesterRole !== 'admin') {
+        const body: ApiErrorResponse = {
+          success: false,
+          error: 'Forbidden',
+        };
+        return NextResponse.json(body, { status: 403 });
+      }
+
+      if (!adminUserId) {
+        const body: ApiErrorResponse = {
+          success: false,
+          error: 'Missing "userId" param for admin scope',
+        };
+        return NextResponse.json(body, { status: 400 });
+      }
     }
 
     // Less than 2 chars => return an empty success (not an error)
@@ -60,7 +126,6 @@ export async function GET(req: Request) {
     const qSearch = normalizeStringForSearch(query);
     const qUser = normalizeUsername(query);
 
-    const { userId: clerkId } = await auth();
     const eventWhere = buildScopedEventWhere(
       scope,
       clerkId ?? undefined,

@@ -1,9 +1,20 @@
 import { NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
 import { prisma } from '@/lib/prisma';
+import { CURRENTLY_ATTENDING_RSVP_WHERE } from '@/lib/rsvpAttendance';
 import type { EventsConfirmedCountResponse } from '@/types/api';
 
 export async function GET(req: Request) {
   try {
+    const { userId } = await auth();
+    if (!userId) {
+      const unauthorized: EventsConfirmedCountResponse = {
+        success: false,
+        error: 'Unauthorized',
+      };
+      return NextResponse.json(unauthorized, { status: 401 });
+    }
+
     const { searchParams } = new URL(req.url);
     const raw = searchParams.get('ids') ?? '';
     const ids = raw.split(',').map(s => s.trim()).filter(Boolean);
@@ -16,7 +27,10 @@ export async function GET(req: Request) {
 
     const rows = await prisma.rSVP.groupBy({
       by: ['eventId'],
-      where: { eventId: { in: ids }, status: 'confirmed' },
+      where: {
+        eventId: { in: ids },
+        ...CURRENTLY_ATTENDING_RSVP_WHERE,
+      },
       _count: { _all: true },
     });
 

@@ -29,7 +29,7 @@ type MenuPayload =
       /** Back-compat: still pass the object if the caller sent it (to be removed later) */
       event?: EventWithCreatorAndRsvps;
       onEventUpdate?: (e: EventWithCreatorAndRsvps) => void;
-      onEventDeleted?: (id: string) => void;
+      onEventArchived?: (id: string) => void;
       onRsvpCancelled?: (id: string) => void;
     }
   | {
@@ -37,7 +37,7 @@ type MenuPayload =
       eventId: string;
       event?: EditableEvent; // temporary back-compat
       onEventUpdate?: (e: EventWithCreatorAndRsvps) => void;
-      onEventDeleted?: (id: string) => void;
+      onEventArchived?: (id: string) => void;
     };
 
 type MenuCtxValue = {
@@ -46,18 +46,18 @@ type MenuCtxValue = {
     (eventId: string, opts?: {
       mode?: MenuVariant;
       onEventUpdate?: (e: EventWithCreatorAndRsvps) => void;
-      onEventDeleted?: (id: string) => void;
+      onEventArchived?: (id: string) => void;
       onRsvpCancelled?: (id: string) => void;
     }): void;
     (event: EditableEvent, opts?: {
       mode?: Extract<MenuVariant, 'editable'>;
       onEventUpdate?: (e: EventWithCreatorAndRsvps) => void;
-      onEventDeleted?: (id: string) => void;
+      onEventArchived?: (id: string) => void;
     }): void;
     (event: EventWithCreatorAndRsvps, opts?: {
       mode?: Extract<MenuVariant, 'non-editable'>;
       onEventUpdate?: (e: EventWithCreatorAndRsvps) => void;
-      onEventDeleted?: (id: string) => void;
+      onEventArchived?: (id: string) => void;
       onRsvpCancelled?: (id: string) => void;
     }): void;
   };
@@ -118,7 +118,7 @@ export function MenuContextProvider({ children }: { children: ReactNode }) {
     opts?: {
       mode?: MenuVariant;
       onEventUpdate?: (e: EventWithCreatorAndRsvps) => void;
-      onEventDeleted?: (id: string) => void;
+      onEventArchived?: (id: string) => void;
       onRsvpCancelled?: (id: string) => void;
     }
   ) => {
@@ -135,7 +135,7 @@ export function MenuContextProvider({ children }: { children: ReactNode }) {
         eventId,
         event: isId ? undefined : (eventOrId as EditableEvent), // temporary back-compat
         onEventUpdate: opts?.onEventUpdate,
-        onEventDeleted: opts?.onEventDeleted,
+        onEventArchived: opts?.onEventArchived,
       });
     } else {
       setPayload({
@@ -143,7 +143,7 @@ export function MenuContextProvider({ children }: { children: ReactNode }) {
         eventId,
         event: isId ? undefined : (eventOrId as EventWithCreatorAndRsvps), // temporary back-compat
         onEventUpdate: opts?.onEventUpdate,
-        onEventDeleted: opts?.onEventDeleted,
+        onEventArchived: opts?.onEventArchived,
         onRsvpCancelled: opts?.onRsvpCancelled,
       });
     }
@@ -198,8 +198,8 @@ export function MenuContextProvider({ children }: { children: ReactNode }) {
               }
             }}
             onEventUpdate={(e) => payload.onEventUpdate?.(e)}
-            onEventDeleted={(id) => {
-              payload.onEventDeleted?.(id);
+            onEventArchived={(id) => {
+              payload.onEventArchived?.(id);
               close();
             }}
           />
@@ -219,8 +219,8 @@ export function MenuContextProvider({ children }: { children: ReactNode }) {
               }
             }}
             onEventUpdate={(e) => payload.onEventUpdate?.(e)}
-            onEventDeleted={(id) => {
-              payload.onEventDeleted?.(id);
+            onEventArchived={(id) => {
+              payload.onEventArchived?.(id);
               close();
             }}
             onRsvpCancelled={payload.onRsvpCancelled}

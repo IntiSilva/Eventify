@@ -176,6 +176,11 @@ const makeEvent = (id: string, title: string): EventWithCreatorAndRsvps => {
     contactEmail: 'contact@example.com',
     contactPhone: null,
     contactPhoneApps: null,
+    isPaid: false,
+    priceCents: null,
+    currency: null,
+    currentPriceVersionId: null,
+    archivedAt: null,
     createdAt: now,
 
     // --- joins extendidos ---

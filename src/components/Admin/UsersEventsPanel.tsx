@@ -19,6 +19,7 @@ import {
 } from '@/contexts/EventsContext';
 
 import { useMediaQuery, useConfirmedCounts } from '@/lib/hooks';
+import { isCurrentlyAttendingRsvp } from '@/lib/rsvpAttendance';
 import { bloomItemVariants, gridStaggerVariants, GRID_STAGGER_OUT, ITEM_EXIT_DURATION } from '@/lib/animations';
 
 import {
@@ -44,7 +45,7 @@ type UepPayload =
   | { url: string; currentPage: number; limit?: number; filters?: SearchbarFilters; searchKey?: string } // fetch start/cancel
   | { requestedPage: number; idsCount: number; meta: PaginatedMetadata } // fetch done
   | { n: number; ms: number } // exit done
-  | { id: string; page: number; searchKey: string } // delete invalidate
+  | { id: string; page: number; searchKey: string } // archive invalidate
   | { EXIT_GUARD_MS: number; pendingPage: number; currentPage: number } // exit guard
   | { rollbackTo: number } // exit guard rollback
   | { filtersSig?: string; pageSize?: number } // resets extra
@@ -69,6 +70,7 @@ function filtersSignature(f: SearchbarFilters): string {
   if (f.category)         p.set('category', f.category);
   if (f.location?.trim()) p.set('location', f.location.trim());
   if (f.date)             p.set('date',     f.date);
+  if (f.paid && f.paid !== 'all') p.set('paid', f.paid);
   return p.toString(); // e.g.: "search=foo&date=2025-08-07"
 }
 
@@ -88,32 +90,24 @@ async function fetchConfirmedFull(
   return json.data;
 }
 
-/* =====================================================================================
- * TYPES (panel-local API)
- * ===================================================================================== */
-
-type PageNavEvent = {
-  userId: string;
-  from: number;
-  to: number;
-  reason: 'next' | 'prev' | 'filters' | 'pagesize';
-};
-
-
 type ResetExtra = { filtersSig?: string; pageSize?: number };
 
 export default function UsersEventsPanel({
   userId,
-  onPageNav,
+  authReady,
+  onRequestScrollToTop,
 }: {
   userId: string;
-  onPageNav?: (e: PageNavEvent) => void;
+  authReady: boolean;
+  onRequestScrollToTop?: () => void;
 }) {
   /* ----------------------------------------------------------------------------- */
   /* UI & FILTER STATE                                                             */
   /* ----------------------------------------------------------------------------- */
 
   const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set());
+  const panelRootRef = useRef<HTMLDivElement | null>(null);
+  const pendingEntryScrollRef = useRef(false);
 
   const [filters, setFilters] = useState<SearchbarFilters>({});
   const filtersSig = useMemo(() => filtersSignature(filters), [filters]);
@@ -140,8 +134,6 @@ export default function UsersEventsPanel({
   useEffect(() => { currentPageRef.current = currentPage; }, [currentPage]);
   useEffect(() => { readyPageRef.current = readyPage; }, [readyPage]);
 
-  const lastNavEventRef = useRef<PageNavEvent | null>(null);
-
   // Media / UI
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isNarrowScreen = useMediaQuery('(max-width: 390px)');
@@ -161,6 +153,10 @@ export default function UsersEventsPanel({
   const didMountResetRef = useRef(false);
   useEffect(() => { didMountResetRef.current = true; }, []);
 
+  useEffect(() => {
+    pendingEntryScrollRef.current = false;
+  }, [userId]);
+
   /* ----------------------------------------------------------------------------- */
   /* SEARCH KEY (namespaced by "admin" + userId)                                   */
   /* ----------------------------------------------------------------------------- */
@@ -170,6 +166,7 @@ export default function UsersEventsPanel({
     if (filters.location) params.set('location', filters.location);
     if (filters.category) params.set('category', filters.category);
     if (filters.date) params.set('date', filters.date);
+    if (filters.paid && filters.paid !== 'all') params.set('paid', filters.paid);
     return `admin:${userId}:${params.toString() || 'ALL'}`;
   }, [userId, filters]);
 
@@ -216,7 +213,7 @@ export default function UsersEventsPanel({
     invalidateSearchPage(searchKeyRef.current, 1);
   }, [invalidateSearchPage]);
 
-  // Robust reset to page 1, with logs and onPageNav. Uses refs to read the current state.
+  // Robust reset to page 1, with logs. Uses refs to read the current state.
 
   const resetToFirstPage = useCallback(
     (reason: 'filters' | 'pagesize', extra?: ResetExtra) => {
@@ -230,8 +227,6 @@ export default function UsersEventsPanel({
         return;
       }
 
-      // Save the nav event; scrolling will be done after the swap
-      lastNavEventRef.current = { userId, from, to: 1, reason };
       uep(`RESET by ${reason} -> 1`, { from, to: 1, ...extra });
 
       setPendingPage(1);
@@ -239,7 +234,7 @@ export default function UsersEventsPanel({
       setExitDone(false);
       startTransition(() => setCurrentPage(1));
     },
-    [userId, startTransition, invalidatePage1]
+    [startTransition, invalidatePage1]
   );
 
   // Track previous filters signature to detect a REAL CHANGE
@@ -291,6 +286,7 @@ export default function UsersEventsPanel({
   /* FETCH requested page if missing or stale                                      */
   /* ----------------------------------------------------------------------------- */
   useEffect(() => {
+    if (!authReady) return;
     if (req.hasPage && !reqIsStale) return;
 
     const limit = pageSize;
@@ -356,6 +352,7 @@ export default function UsersEventsPanel({
       uep('FETCH cancel guard (cancelled=true) for', { url, currentPage });
     };
   }, [
+    authReady,
     req.hasPage,
     reqIsStale,
     searchKey,
@@ -376,15 +373,51 @@ export default function UsersEventsPanel({
   const totalPages = vis.hasPage ? (meta?.totalPages ?? 1) : 1;
   const uiCurrent  = currentPage; // UI reflects the requested page
 
+  const fallbackScrollToTop = useCallback(() => {
+    const panelRoot = panelRootRef.current;
+    if (!panelRoot) return;
+
+    const parent = panelRoot.parentElement;
+    if (parent) {
+      const parentRect = parent.getBoundingClientRect();
+      const panelRect = panelRoot.getBoundingClientRect();
+      const nextTop = parent.scrollTop + (panelRect.top - parentRect.top);
+
+      if (Number.isFinite(nextTop)) {
+        parent.scrollTo({ top: Math.max(nextTop, 0), behavior: 'smooth' });
+        return;
+      }
+    }
+
+    const panelRect = panelRoot.getBoundingClientRect();
+    const nextWindowTop = window.scrollY + panelRect.top;
+    window.scrollTo({ top: Math.max(nextWindowTop, 0), behavior: 'smooth' });
+  }, []);
+
+  const handleGridAnimationComplete = useCallback(() => {
+    if (!pendingEntryScrollRef.current) return;
+    if (isExiting) return;
+    if (pendingPage !== null) return;
+    if (currentPage !== readyPage) return;
+
+    //Use the function passed from the parent if available, otherwise fallback to the internal one
+    pendingEntryScrollRef.current = false;
+    if (onRequestScrollToTop) {
+      onRequestScrollToTop();
+      return;
+    }
+
+    fallbackScrollToTop();
+  }, [currentPage, fallbackScrollToTop, isExiting, onRequestScrollToTop, pendingPage, readyPage]);
+
   /* ----------------------------------------------------------------------------- */
   /* Pagination handlers                                                            */
   /* ----------------------------------------------------------------------------- */
   const handleNextPage = () => {
     if (currentPage < totalPages) {
       const target = currentPage + 1;
-      // Save the nav event; scrolling will be done after the swap
-      lastNavEventRef.current = { userId, from: currentPage, to: target, reason: 'next' };
       uep('NEXT', { from: currentPage, to: target, totalPages });
+      pendingEntryScrollRef.current = true;
       setPendingPage(target);
       setIsExiting(true);
       setExitDone(false);
@@ -394,9 +427,8 @@ export default function UsersEventsPanel({
   const handlePreviousPage = () => {
     if (currentPage > 1) {
       const target = currentPage - 1;
-      // Save the nav event; scrolling will be done after the swap
-      lastNavEventRef.current = { userId, from: currentPage, to: target, reason: 'prev' };
       uep('PREV', { from: currentPage, to: target });
+      pendingEntryScrollRef.current = true;
       setPendingPage(target);
       setIsExiting(true);
       setExitDone(false);
@@ -454,20 +486,13 @@ export default function UsersEventsPanel({
     setExitDone(false);
     setPendingPage(null);
 
-    // Once the new page is visible, trigger the accordion scroll
-    if (onPageNav && lastNavEventRef.current) {
-      onPageNav(lastNavEventRef.current);
-      lastNavEventRef.current = null;
-    }
-
   }, [
     isExiting,
     pendingPage,
     currentPage,
     req.hasPage,
     reqIsStale,
-    readyPage,
-    onPageNav
+    readyPage
   ]);
 
   /* ----------------------------------------------------------------------------- */
@@ -484,6 +509,7 @@ export default function UsersEventsPanel({
     uep('EXIT GUARD start', { EXIT_GUARD_MS, pendingPage, currentPage });
     const t = setTimeout(() => {
       uep('EXIT GUARD rollback (page not arrived)', { rollbackTo: readyPage });
+      pendingEntryScrollRef.current = false;
       setCurrentPage(readyPage);
       setIsExiting(false);
       setExitDone(false);
@@ -564,10 +590,10 @@ export default function UsersEventsPanel({
   );
 
   /* ----------------------------------------------------------------------------- */
-  /* DELETE handler (this view owns its key/page)                                  */
+  /* ARCHIVE handler (this view owns its key/page)                                  */
   /* ----------------------------------------------------------------------------- */
-  const handleMenuDelete = useCallback((id: string) => {
-    uep('DELETE invalidate', { id, page: currentPage, searchKey });
+  const handleMenuArchive = useCallback((id: string) => {
+    uep('ARCHIVE invalidate', { id, page: currentPage, searchKey });
     invalidateSearchPage(searchKey, currentPage);
     removeEvents([id]);
   }, [invalidateSearchPage, removeEvents, searchKey, currentPage]);
@@ -584,113 +610,127 @@ export default function UsersEventsPanel({
     openMenu(event.id, {
       mode: 'editable',
       onEventUpdate: handleMenuUpdate,
-      onEventDeleted: handleMenuDelete,
+      onEventArchived: handleMenuArchive,
     });
-  }, [entityById, upsertEvents, openMenu, handleMenuUpdate, handleMenuDelete]);
+  }, [entityById, upsertEvents, openMenu, handleMenuUpdate, handleMenuArchive]);
 
   /* ----------------------------------------------------------------------------- */
   /* RENDER                                                                        */
   /* ----------------------------------------------------------------------------- */
   return (
-    <div className="space-y-6 px-2 py-4 md:p-4 bg-zinc-900/50 rounded-b-lg" style={{ overflowAnchor: 'none' }}>
-      {/* Filters */}
-      <div className="w-full md:w-[410px]">
-        <Searchbar
-          isScrolled={isDesktop ? false : true}
-          isDesktop={isDesktop}
-          isNarrowScreen={isNarrowScreen}
-          onSearchSubmit={setFiltersSafe}
-          disableCreatorFilter={true}
-          suggestionMode="server"
-          suggestionScope={{ type: 'admin', userId }}
+    <div
+      ref={panelRootRef}
+      className="rounded-b-lg bg-zinc-900/50"
+      style={{ overflowAnchor: 'none' }}
+    >
+      <div className="space-y-6 px-2 py-4 md:px-4 md:pt-4 md:pb-3">
+        {/* Filters */}
+        <div className="w-full md:w-[410px]">
+          <Searchbar
+            isScrolled={isDesktop ? false : true}
+            isDesktop={isDesktop}
+            isNarrowScreen={isNarrowScreen}
+            onSearchSubmit={setFiltersSafe}
+            disableCreatorFilter={true}
+            suggestionMode="server"
+            suggestionScope={{ type: 'admin', userId }}
+          />
+        </div>
+
+        {/* Title */}
+        <SearchResultsTitle
+          searchTerm={filters.search}
+          category={filters.category}
+          location={filters.location}
+          date={filters.date}
+          paid={filters.paid}
+          as="h3"
+          className="px-1 md:px-0 -mt-1 mb-2"
+          compact
         />
       </div>
 
-      {/* Title */}
-      <SearchResultsTitle
-        searchTerm={filters.search}
-        category={filters.category}
-        location={filters.location}
-        date={filters.date}
-        as="h3"
-        className="px-1 md:px-0 -mt-1 mb-2"
-        compact
-      />
+      <div className="px-2 pb-4 md:px-4 md:pb-4">
+        <div className="space-y-4">
+          {/* Loading */}
+          {loading && (
+            <div className="flex justify-center p-4">
+              <Loader2 className="h-6 w-6 animate-spin text-emerald-400" />
+            </div>
+          )}
 
-      {/* Loading */}
-      {loading && (
-        <div className="flex justify-center p-4">
-          <Loader2 className="h-6 w-6 animate-spin text-emerald-400" />
+          {/* Empty state */}
+          {!loading && eventsFromStore.length === 0 && (
+            <div className="px-2 py-6">
+              <p className="text-center text-zinc-400">
+                No events found for this user.
+              </p>
+            </div>
+          )}
+
+          {/* Grid */}
+          {!loading && eventsFromStore.length > 0 && (
+            <motion.div
+              className="grid grid-cols-2 lg:grid-cols-4 gap-2 lg:gap-4"
+              key={`${searchKey}:${readyPage}:${pageSize}`}
+              variants={gridStaggerVariants}
+              initial={didMountRef.current ? 'initial' : false}
+              animate={isExiting ? 'exit' : 'animate'}
+              onAnimationComplete={handleGridAnimationComplete}
+              aria-busy={isPaginating || isPending}
+              style={{ pointerEvents: (isPaginating || isPending) ? 'none' : 'auto' }}
+            >
+              {eventsFromStore.map((event) => {
+                const full = entityById.get(event.id);
+                const confirmedCount = Array.isArray(full?.rsvps)
+                  ? full!.rsvps!.filter((r) => isCurrentlyAttendingRsvp(r)).length
+                  : (counts[event.id] ?? 0);
+
+                return (
+                  <motion.div key={event.id} variants={bloomItemVariants} layout>
+                    <SimpleEventCard
+                      event={event as EditableEvent}
+                      showAdminControls={true}
+                      onDetailsClick={handleDetailsClick}
+                      onEventUpdate={handleCardUpdate}
+                      isUpdating={updatingIds.has(event.id)}
+                      attendeesConfirmedCount={confirmedCount}
+                      animateCounterWhenInView
+                    />
+                  </motion.div>
+                );
+              })}
+            </motion.div>
+          )}
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-3 pt-4">
+              <AnimatedCarouselArrow
+                direction="left"
+                onClick={handlePreviousPage}
+                disabled={currentPage === 1 || loading || isPaginating || isExiting || isPending}
+                isDesktop={isDesktop}
+                variant="pagination"
+                size={36}
+                mobileSize={28}
+              />
+              <span className="text-white text-sm">
+                {uiCurrent} / {totalPages}
+              </span>
+              <AnimatedCarouselArrow
+                direction="right"
+                onClick={handleNextPage}
+                disabled={currentPage === totalPages || loading || isPaginating || isExiting || isPending}
+                isDesktop={isDesktop}
+                variant="pagination"
+                size={36}
+                mobileSize={28}
+              />
+            </div>
+          )}
         </div>
-      )}
-
-      {/* Empty state */}
-      {!loading && eventsFromStore.length === 0 && (
-        <p className="text-zinc-400 col-span-full mt-4 text-center">
-          No events found for this user.
-        </p>
-      )}
-
-      {/* Grid */}
-      {!loading && eventsFromStore.length > 0 && (
-        <motion.div
-          className="grid grid-cols-2 lg:grid-cols-4 gap-2 lg:gap-4"
-          key={`${searchKey}:${readyPage}:${pageSize}`}
-          variants={gridStaggerVariants}
-          initial={didMountRef.current ? 'initial' : false}
-          animate={isExiting ? 'exit' : 'animate'}
-          aria-busy={isPaginating || isPending}
-          style={{ pointerEvents: (isPaginating || isPending) ? 'none' : 'auto' }}
-        >
-          {eventsFromStore.map((event) => {
-            const full = entityById.get(event.id);
-            const confirmedCount = Array.isArray(full?.rsvps)
-              ? full!.rsvps!.filter((r) => r.status === RSVPStatus.confirmed).length
-              : (counts[event.id] ?? 0);
-
-            return (
-              <motion.div key={event.id} variants={bloomItemVariants} layout>
-                <SimpleEventCard
-                  event={event as EditableEvent}
-                  showAdminControls={true}
-                  onDetailsClick={handleDetailsClick}
-                  onEventUpdate={handleCardUpdate}
-                  isUpdating={updatingIds.has(event.id)}
-                  attendeesConfirmedCount={confirmedCount}
-                  animateCounterWhenInView
-                />
-              </motion.div>
-            );
-          })}
-        </motion.div>
-      )}
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex justify-center items-center gap-3 pt-4">
-          <AnimatedCarouselArrow
-            direction="left"
-            onClick={handlePreviousPage}
-            disabled={currentPage === 1 || loading || isPaginating || isExiting || isPending}
-            isDesktop={isDesktop}
-            variant="pagination"
-            size={36}
-            mobileSize={28}
-          />
-          <span className="text-white text-sm">
-            {uiCurrent} / {totalPages}
-          </span>
-          <AnimatedCarouselArrow
-            direction="right"
-            onClick={handleNextPage}
-            disabled={currentPage === totalPages || loading || isPaginating || isExiting || isPending}
-            isDesktop={isDesktop}
-            variant="pagination"
-            size={36}
-            mobileSize={28}
-          />
-        </div>
-      )}
+      </div>
     </div>
   );
 }

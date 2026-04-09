@@ -91,6 +91,9 @@ export interface TiltedInfiniteListProps {
   /** Infinite wrap (default true). When false, list clamps at ends */
   infinite?: boolean;
 
+  /** Allow wheel-at-edge release to native page scrolling (finite mode only). */
+  allowWheelPageEdgeRelease?: boolean;
+
 
   /* Logs */
   debug?: boolean;
@@ -170,7 +173,8 @@ export default function TiltedInfiniteList(props: TiltedInfiniteListProps) {
     maxRenderCount,
 
     /* Infinite vs finite mode */
-    infinite = true,
+    infinite = false,
+    allowWheelPageEdgeRelease = true,
 
     /* Logs */
     debug = false,
@@ -183,11 +187,15 @@ export default function TiltedInfiniteList(props: TiltedInfiniteListProps) {
 
   const ariaLabel = "RSVP events list";
 
-  // Top slack: que el primer row no quede pegado al borde en modo finito.
-const finiteTopSlackPx =
-  !infinite ? Math.round(stride * 0.12) : 0; // ~12% del alto del row
+// Top slack: so that the first row isnt covered by the top edge fade, and 
+// to give some extra room in finite mode for the selected row to pop out without being visually cut off.
+// In infinite mode we can skip this since the list wraps around seamlessly.
+const finiteTopSlackPx = 
+  !infinite
+    ? Math.round(stride * (tiltEnabled ? 1.5 : 0.2))
+    : 0; // smaller tilt slack + extra list-mode room for selected-row pop/glow
 
-// Bottom slack: lo que ya estábamos usando para que el último row se vea completo en tilt.
+// Bottom slack: what we were already using to make the last row look complete on tilt.
 const finiteBottomSlackPx =
   !infinite && tiltEnabled ? Math.round(itemHeight * 1.2) : Math.round(itemHeight * 0.5);
 
@@ -212,7 +220,7 @@ const finiteBottomSlackPx =
   );
 
   // Build the indices of items matching the current search
-  const searchFocusIndices = React.useMemo(() => {
+  const searchFocusIndices = useMemo(() => {
     if (!searchActive) return undefined;
     if (!searchFocusIds) return undefined;
 
@@ -231,7 +239,6 @@ const finiteBottomSlackPx =
   /* ───────────────────────── Engine hookup ───────────────────────── */
 
   const {
-    containerH,
     windowStartAbs,
     renderCount,
 
@@ -291,6 +298,7 @@ const finiteBottomSlackPx =
     wheelFeel: props.wheelFeel,
     wheelFeelOverride: props.wheelFeelOverride,
     infinite,
+    allowWheelPageEdgeRelease,
     finiteStartSlackPx: finiteTopSlackPx,
     finiteEndSlackPx: finiteBottomSlackPx,
     debug,
@@ -354,10 +362,11 @@ const finiteBottomSlackPx =
     rows.push(
       <li
         key={key}
-        className="absolute left-0 right-0"
+        className="absolute left-0 right-0 overflow-visible"
         style={{
           top: `${top}px`,
           height: `${itemHeight}px`,
+          zIndex: isSel ? 40 : 10,
           transformStyle: 'preserve-3d',
           willChange: 'transform',
         }}
@@ -413,7 +422,7 @@ const finiteBottomSlackPx =
       <div
         ref={containerRef}
         className={cn(
-          'relative w-full overflow-hidden select-none',
+          'relative w-full overflow-x-hidden overflow-y-hidden select-none',
           '[--fade-top:56px] md:[--fade-top:96px]',
           '[--fade-bottom:56px] md:[--fade-bottom:96px]',
           '[mask-image:linear-gradient(to_bottom,transparent_0,black_var(--fade-top),black_calc(100%-var(--fade-bottom)),transparent_100%)]',
@@ -432,7 +441,7 @@ const finiteBottomSlackPx =
     <div
       ref={containerRef}
       className={cn(
-        'relative w-full overflow-hidden select-none',
+        'relative w-full overflow-x-hidden overflow-y-hidden select-none',
         // Top fade: stronger in Tilt, softer in List
         tiltEnabled ? '[--fade-top:56px] md:[--fade-top:96px]' : '[--fade-top:10px] md:[--fade-top:12px]',
         // Bottom fade: keep equal or slightly lower in List
@@ -474,7 +483,7 @@ const finiteBottomSlackPx =
           role="list"
           className="relative list-none m-0 p-0"
           style={{
-             height: containerH > 0 ? `${containerH}px` : '100%',
+            height: '100%',
             willChange: 'transform',
             transformStyle: 'preserve-3d', // prevents 3D flattening
             contain: 'layout',
@@ -499,7 +508,7 @@ function containerStyle(tilt: boolean, heightOverride?: number | string): React.
       : 'calc(100dvh - 180px)';
 
   return {
-    // We handle all vertical movement via translateY on the track
+    // List region owns drag interactions (including touch) locally.
     touchAction: 'none',
     WebkitTransform: 'translateZ(0)',
     transform: 'translateZ(0)',

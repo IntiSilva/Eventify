@@ -8,6 +8,7 @@ import Searchbar, { type SearchbarFilters } from '../Searchbar/Searchbar';
 import SearchResultsTitle from '../AnimatedText/SearchResultsTitle';
 import OrganizerEvents from './OrganizerEvents';
 import OrganizerCarousel from './OrganizerCarousel';
+import OrganizerSignalDeck from './OrganizerSignalDeck';
 import { AuroraButton } from '../CommonButtons/AuroraButton';
 import { buildOrganizerQS } from '@/lib/utils';
 
@@ -15,7 +16,12 @@ import {
   useStoreWriters,
 } from '@/contexts/EventsContext';
 import type { EditableEvent } from '@/types/event';
-import type { PaginatedMetadata } from '@/types/api';
+import type { OrganizerEventsContext, PaginatedMetadata } from '@/types/api';
+import type { RefundViewerCounts } from '@/components/Payments/refunds/types/refunds';
+import type {
+  OrganizerOverviewSnapshot,
+  OrganizerOverviewTimeSeriesSnapshot,
+} from '@/lib/data';
 import { useMediaQuery } from '@/lib/hooks';
 import AnimatedIcon from '../LordIcons/AnimatedIcon';
 import { CalendarAnimatedIcon } from '@/lib/icons';
@@ -24,6 +30,7 @@ import { CalendarAnimatedIcon } from '@/lib/icons';
 type OrganizerInitialPayload = {
   data: EditableEvent[];
   metadata: PaginatedMetadata;
+  context: OrganizerEventsContext;
 };
 
 interface OrganizerPageClientWrapperProps {
@@ -31,6 +38,10 @@ interface OrganizerPageClientWrapperProps {
   popularEvents: EditableEvent[];
   monthlyEvents: EditableEvent[];
   isSearchMode: boolean;
+  refundCounts: RefundViewerCounts;
+  overviewSnapshot: OrganizerOverviewSnapshot;
+  overviewTimeSeries: OrganizerOverviewTimeSeriesSnapshot;
+  isStripeReady: boolean;
 }
 
 export default function OrganizerPageClientWrapper({
@@ -38,6 +49,10 @@ export default function OrganizerPageClientWrapper({
   popularEvents,
   monthlyEvents,
   isSearchMode,
+  refundCounts,
+  overviewSnapshot,
+  overviewTimeSeries,
+  isStripeReady,
 }: OrganizerPageClientWrapperProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -53,13 +68,23 @@ export default function OrganizerPageClientWrapper({
   const SWR_location = searchParams.get('location') || '';
   const SWR_category = searchParams.get('category') || '';
   const SWR_date     = searchParams.get('date')     || '';
+  const SWR_paidRaw  = searchParams.get('paid');
+  const SWR_paid     = SWR_paidRaw === 'paid' || SWR_paidRaw === 'free' ? SWR_paidRaw : 'all';
 
   const filters: SearchbarFilters = useMemo(() => ({
     search:   SWR_search   || undefined,
     location: SWR_location || undefined,
     category: SWR_category || undefined,
     date:     SWR_date     || undefined,
-  }), [SWR_search, SWR_location, SWR_category, SWR_date]);
+    paid:     SWR_paid,
+  }), [SWR_search, SWR_location, SWR_category, SWR_date, SWR_paid]);
+
+  const spotlightEvent = useMemo<EditableEvent | null>(() => {
+    if (popularEvents.length > 0) return popularEvents[0];
+    if (monthlyEvents.length > 0) return monthlyEvents[0];
+    if (initialPayload.data.length > 0) return initialPayload.data[0];
+    return null;
+  }, [popularEvents, monthlyEvents, initialPayload.data]);
 
   // Stable key (does not include limit; the list will refetch if the limit differs)
   const searchKey = useMemo(() => {
@@ -69,9 +94,10 @@ export default function OrganizerPageClientWrapper({
         location: SWR_location,
         category: SWR_category,
         date: SWR_date,
+        paid: SWR_paid,
       },
     }) || 'ALL';
-  }, [SWR_search, SWR_location, SWR_category, SWR_date]);
+  }, [SWR_search, SWR_location, SWR_category, SWR_date, SWR_paid]);
 
   // Seed SSR data into the store as-is (eventsPerPage may be 8)
   const { upsertEditableEvents, setSearchPage } = useStoreWriters();
@@ -123,14 +149,9 @@ export default function OrganizerPageClientWrapper({
   const handleOrganizerSearch = (f: SearchbarFilters) => {
     router.push(`/organizer?${buildOrganizerQS({ filters: f })}`);
   };
-const completelyEmpty =
-  !isSearchMode &&
-  (initialPayload?.metadata?.totalEvents ?? 0) === 0 &&
-  popularEvents.length === 0 &&
-  monthlyEvents.length === 0;
+const completelyEmpty = !isSearchMode && !initialPayload.context.hasAnyEventsEver;
 
-// Early return: Empty state hero (ENGLISH copy)
-// Si el perfil está completamente vacío: hero (todo en inglés)
+// Early return: empty state hero
 if (completelyEmpty) {
   return (
     <div className="px-4 py-10 md:py-14">
@@ -179,6 +200,16 @@ if (completelyEmpty) {
 
   return (
     <div className="space-y-6">
+      {initialPayload.context.hasAnyEventsEver && (
+        <OrganizerSignalDeck
+          refundCounts={refundCounts}
+          overviewSnapshot={overviewSnapshot}
+          overviewTimeSeries={overviewTimeSeries}
+          spotlightEvent={spotlightEvent}
+          isStripeReady={isStripeReady}
+        />
+      )}
+
       {/* Searchbar */}
       <div className="w-full md:w-[410px] md:ml-0">
         <Searchbar
@@ -198,6 +229,7 @@ if (completelyEmpty) {
         category={SWR_category || undefined}
         location={SWR_location || undefined}
         date={SWR_date || undefined}
+        paid={SWR_paid}
         creatorLabel="Organized by"
         as="h2"
         className="mb-4 md:mb-6"

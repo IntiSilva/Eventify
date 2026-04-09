@@ -40,6 +40,18 @@ export class NotPayableError extends PaymentError {
 }
 
 /**
+ * Event exists but cannot accept new joins (archived or already started).
+ */
+export class EventNotJoinableError extends PaymentError {
+  readonly code = 'EVENT_NOT_JOINABLE' as const;
+
+  constructor(message = 'Event is no longer accepting new attendance or purchases') {
+    super(message);
+    Object.setPrototypeOf(this, EventNotJoinableError.prototype);
+  }
+}
+
+/**
  * Payment intent already succeeded or payment already confirmed for this user+event.
  */
 export class AlreadyPaidError extends PaymentError {
@@ -48,6 +60,19 @@ export class AlreadyPaidError extends PaymentError {
   constructor(message = 'Payment has already been completed for this event') {
     super(message);
     Object.setPrototypeOf(this, AlreadyPaidError.prototype);
+  }
+}
+
+/**
+ * Marketplace checkout is blocked until the organizer is fully ready for
+ * destination-charge routing.
+ */
+export class ConnectNotReadyError extends PaymentError {
+  readonly code = 'CONNECT_NOT_READY' as const;
+
+  constructor(message = 'The organizer is not ready to accept payments yet') {
+    super(message);
+    Object.setPrototypeOf(this, ConnectNotReadyError.prototype);
   }
 }
 
@@ -83,7 +108,9 @@ export class StripeApiError extends PaymentError {
 export type DomainError =
   | NotFoundError
   | NotPayableError
+  | EventNotJoinableError
   | AlreadyPaidError
+  | ConnectNotReadyError
   | StripeConfigError
   | StripeApiError;
 
@@ -108,7 +135,11 @@ export function mapPaymentErrorToStatusCode(error: PaymentError): number {
       return 404; // Not Found
     case 'NOT_PAYABLE':
       return 400; // Bad Request
+    case 'EVENT_NOT_JOINABLE':
+      return 409; // Conflict
     case 'ALREADY_PAID':
+      return 409; // Conflict
+    case 'CONNECT_NOT_READY':
       return 409; // Conflict
     case 'STRIPE_CONFIG':
       return 500; // Internal Server Error

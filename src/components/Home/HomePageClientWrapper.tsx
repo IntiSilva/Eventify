@@ -127,6 +127,7 @@ export default function HomePageClientWrapper({
   currentLocation,
   currentCreator,
   currentDate,
+  currentPaid,
   upcomingEvents,
   featuredEvents,
   initialMainListPayload,
@@ -279,7 +280,8 @@ useEffect(() => {
         filters.category ||
         filters.location?.trim() ||
         filters.creator?.trim() ||
-        filters.date
+        filters.date ||
+        (filters.paid && filters.paid !== 'all')
     );
 
     // Flip UI immediately (don’t wait for SSR prop change)
@@ -377,6 +379,7 @@ useEffect(() => {
             location={(optimisticFilters.location ?? currentLocation) || null}
             creator={(optimisticFilters.creator ?? currentCreator) || null}
             date={(optimisticFilters.date ?? currentDate) || null}
+            paid={(optimisticFilters.paid ?? currentPaid) || null}
             creatorLabel="Organized by"
             as="h2"
             className="mb-6"

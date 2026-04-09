@@ -224,6 +224,42 @@ Create a `.env` file (or `.env.local` for Next.js) with the following keys (adap
 - `RESEND_API_KEY` – Resend API key for transactional emails
 - `EMAIL_FROM_ADDRESS` – Verified sender address used by Resend for reminder emails
 
+**Payments / Stripe**
+
+- `STRIPE_SECRET_KEY` – Stripe secret key used for PaymentIntents, refunds, and Connect onboarding
+- `STRIPE_WEBHOOK_SECRET` – Signing secret for `/api/webhooks/stripe`
+- `STRIPE_CONNECT_WEBHOOK_SECRET` – Signing secret for `/api/webhooks/stripe-connect` (Events on connected accounts)
+- `PLATFORM_FEE_BPS` (optional) – Platform fee in basis points for destination charges. Current product direction uses `1000` (10%).
+- `PLATFORM_FEE_CENTS` (optional) – Flat platform fee in cents for destination charges. When this is set to a value greater than `0`, it takes precedence over `PLATFORM_FEE_BPS`.
+- `STRIPE_ESTIMATED_FEE_BPS` (optional) – Preview-only Stripe fee estimate in basis points (defaults to `290`).
+- `STRIPE_ESTIMATED_FIXED_FEE_CENTS` (optional) – Preview-only fixed Stripe fee estimate in minor currency units (defaults to `30`).
+- `REFUND_REQUEST_CUTOFF_HOURS` (optional) – Buyer refund-request cutoff window before the event starts (defaults to `4`)
+
+Stripe webhook events currently handled:
+
+- `payment_intent.succeeded`
+- `payment_intent.processing`
+- `payment_intent.canceled`
+- `payment_intent.payment_failed`
+- `refund.updated`
+- `charge.dispute.created`
+- `charge.dispute.updated`
+- `charge.dispute.closed`
+
+Stripe Connect webhook setup:
+
+- Create a second Stripe webhook endpoint configured to listen to `Events on connected accounts`.
+- Point it to `/api/webhooks/stripe-connect`.
+- Subscribe at minimum to `account.updated`.
+- Save that endpoint's signing secret to `STRIPE_CONNECT_WEBHOOK_SECRET`.
+
+One-off Stripe Connect bootstrap (sandbox/dev):
+
+- Dry-run (organizers only): `npm run bootstrap:stripe-connect`
+- Apply changes: `npm run bootstrap:stripe-connect -- --apply`
+- Repair stale/missing account ids explicitly: `npm run bootstrap:stripe-connect -- --apply --repair-missing`
+- Optional cohort flags: `--include-admins`, `--only-missing`, `--only-clerk-id=<id>`, `--limit=<n>`, `--json-report=<path>`
+
 **Cron / Featured Events**
 
 - `CRON_SECRET` – Shared secret required (header + query) to access `/api/cron/send-reminders`
@@ -291,6 +327,15 @@ E2E seed data (used by Playwright flows) is available via:
 npm run e2e:reset   # pushes schema to .env.e2e database
 npm run e2e:seed    # seeds test users/events/reminders
 ```
+
+Demo seed data (dev/sandbox, reuses existing users) is available via:
+
+```bash
+npm run seed:demo
+npm run seed:demo -- --with-payment-fixtures
+```
+
+Payment fixtures created with `--with-payment-fixtures` are DB-only synthetic records for UI/testing and are not backed by real Stripe PaymentIntents.
 
 ---
 
@@ -405,4 +450,3 @@ Once configured, pushing to your main branch can trigger automatic deployments v
 
 ## © 2025 Inti Silva. All rights reserved.
 This code is for personal use only and is not authorized for commercial use or redistribution without the author's explicit permission.
-

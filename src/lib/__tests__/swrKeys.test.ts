@@ -11,6 +11,7 @@ vi.mock('@/lib/utils', () => {
       location?: string
       creator?: string
       date?: string
+      paid?: 'all' | 'paid' | 'free'
     }, viewTz?: string) => {
       const qs = new URLSearchParams()
       qs.set('search',   filters.search   ?? '')
@@ -18,6 +19,7 @@ vi.mock('@/lib/utils', () => {
       qs.set('location', filters.location ?? '')
       qs.set('creator',  filters.creator  ?? '')
       qs.set('date',     filters.date     ?? '')
+      if (filters.paid && filters.paid !== 'all') qs.set('paid', filters.paid)
       if (viewTz) qs.set('viewTz', viewTz)
       return qs.toString()
     },
@@ -39,6 +41,7 @@ describe('swrKeys helpers', () => {
       location: '',
       creator: '',
       date: '',
+      paid: 'all' as const,
     }
 
     const qsStr = buildPaginatedEventsURL({
@@ -73,6 +76,7 @@ describe('swrKeys helpers', () => {
     expect(qs.get('location')).toBe('') // empty is serialized as empty string
     expect(qs.get('creator')).toBe('')
     expect(qs.get('date')).toBe('')
+    expect(qs.get('paid')).toBeNull()
   })
 
   it('buildPaginatedEventsURL: omits exclude when excludeIds is empty/undefined', () => {
@@ -93,13 +97,14 @@ describe('swrKeys helpers', () => {
     expect(qs.has('exclude')).toBe(false)
   })
 
-  it('buildSearchKey: returns only search/category/location/creator/date; includes viewTz only when provided', () => {
+  it('buildSearchKey: returns search/category/location/creator/date/paid; includes viewTz only when provided', () => {
     const filters = {
       search: 'jazz',
       category: 'music',
       location: 'nyc',
       creator: 'alice',
       date: '2099-10-10',
+      paid: 'free' as const,
     }
 
     // With a viewTz
@@ -110,12 +115,14 @@ describe('swrKeys helpers', () => {
     expect(qsWithTz.get('location')).toBe('nyc')
     expect(qsWithTz.get('creator')).toBe('alice')
     expect(qsWithTz.get('date')).toBe('2099-10-10')
+    expect(qsWithTz.get('paid')).toBe('free')
     expect(qsWithTz.get('viewTz')).toBe('America/New_York')
     expect((withTz.match(/viewTz=/g) ?? []).length).toBe(1)
 
     // Without a viewTz
     const withoutTz = buildSearchKey(filters)
     const qsWithoutTz = new URLSearchParams(withoutTz)
+    expect(qsWithoutTz.get('paid')).toBe('free')
     expect(qsWithoutTz.get('viewTz')).toBeNull()
     expect((withoutTz.match(/viewTz=/g) ?? []).length).toBe(0)
   })

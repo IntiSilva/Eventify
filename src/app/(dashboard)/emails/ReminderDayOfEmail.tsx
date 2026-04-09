@@ -1,21 +1,22 @@
-import * as React from "react";
 import { EmailLayout } from "./EmailLayout";
 import {
   Logo,
   Title,
   Subtitle,
   P,
+  Hr,
   InfoRow,
+  PrimaryButton,
   FooterNote,
 } from "./ui";
 
 export interface ReminderDayOfEmailProps {
   eventName: string;
-  eventTime: string;        // <- REQUIRED (what you're currently sending from route.ts)
-  eventDate?: string;       // <- OPTIONAL (in case you ever send it as well)
+  eventTime: string;
+  eventDate?: string;
   eventLocation: string;
   username: string;
-  // eventUrl?: string;
+  eventUrl?: string;
 }
 
 export const ReminderDayOfEmail = ({
@@ -24,35 +25,38 @@ export const ReminderDayOfEmail = ({
   eventDate,
   eventLocation,
   username,
-  // eventUrl = "https://tu-app.com",
-}: ReminderDayOfEmailProps) => {
-  return (
-    <EmailLayout preview={`Hoy es ${eventName}`}>
-      <Logo />
+  eventUrl,
+}: ReminderDayOfEmailProps) => (
+  <EmailLayout preview={`Today • ${eventName}`}>
+    <Logo />
 
-      <Title>Hi {username}!</Title>
-      <Subtitle>Today is the big day!</Subtitle>
+    <Title align="center" size={28}>It&apos;s today</Title>
+    <Subtitle>{eventName}</Subtitle>
 
-      <P>
-        We remind you that the event <strong>{eventName}</strong> it&apos;s{" "}
-        <strong>today</strong>. Below we left you the info:
-      </P>
+    <P>
+      Hi {username}, this is a quick reminder that your event is happening
+      today.
+    </P>
 
-      {eventDate && <InfoRow label="Date" value={eventDate} />}
-      <InfoRow label="Time" value={eventTime} />
-      <InfoRow label="Location" value={eventLocation} />
+    <Hr />
 
-      {/* {eventUrl && (
-        <div style={{ textAlign: "center", marginTop: 24 }}>
-          <PrimaryButton href={eventUrl}>See event details</PrimaryButton>
-        </div>
-      )} */}
+    <Subtitle>Today&apos;s schedule</Subtitle>
+    {eventDate && <InfoRow label="Date" value={eventDate} />}
+    <InfoRow label="Time" value={eventTime} />
+    <InfoRow label="Location" value={eventLocation} />
 
-      <FooterNote>
-        Eventify Platform • © {new Date().getFullYear()}
-      </FooterNote>
-    </EmailLayout>
-  );
-};
+    {eventUrl && (
+      <div style={{ textAlign: "center", marginTop: 16 }}>
+        <PrimaryButton href={eventUrl}>Open event page</PrimaryButton>
+      </div>
+    )}
+
+    <P muted style={{ textAlign: "center", marginTop: 12 }}>
+      If plans change, update your attendance status so others can take your spot.
+    </P>
+
+    <FooterNote>Eventify Platform • © {new Date().getFullYear()}</FooterNote>
+  </EmailLayout>
+);
 
 export default ReminderDayOfEmail;

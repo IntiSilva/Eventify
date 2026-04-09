@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
+import { useSWRConfig } from 'swr';
 import {
   MapPin,
   Calendar,
@@ -10,7 +11,6 @@ import {
   Phone,
   Tag,
   Clock,
-  CheckCircle2,
 } from 'lucide-react';
 
 import { loadStripe, type Appearance, type StripeElementsOptions } from '@stripe/stripe-js';
@@ -21,28 +21,34 @@ import type { TicketState } from '@/types/payments/stripe';
 import type { EventWithCreatorAndRsvps } from '@/types/event';
 import type { EventByIdResponse } from '@/types/api';
 import UserAvatar from '@/components/UserAvatar';
-import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
+import {
+  capitalizeFirstLetter,
+  cn,
+  formatPrice,
+  getCategoryBadgeColors,
+} from '@/lib/utils';
 import { useStoreWriters } from '@/contexts/EventsContext';
 import { useRsvpActions } from '@/contexts/EventsContext';
+import AnimatedIcon from '@/components/LordIcons/AnimatedIcon';
+import { CheckAnimatedIcon } from '@/lib/icons';
+import {
+  revalidateAfterCheckout,
+  scheduleSecondPassRevalidate,
+} from '@/lib/payments/revalidateAfterCheckout';
 
-function formatAmount(priceCents: number, currency: string) {
-  const amount = priceCents / 100;
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency,
-      currencyDisplay: 'symbol',
-      maximumFractionDigits: 2,
-    }).format(amount);
-  } catch {
-    return `${amount.toFixed(2)} ${currency}`;
-  }
+function getContactPhoneAppsLabel(apps: CheckoutEventForClient['contactPhoneApps']): string | null {
+  if (apps === 'whatsapp') return 'WhatsApp';
+  if (apps === 'telegram') return 'Telegram';
+  if (apps === 'both') return 'WhatsApp & Telegram';
+  return null;
 }
 
 function CheckoutForm({
   event,
   eventId,
   userId,
+  paymentIntentId,
   onSuccess,
   onError,
   reconcileAfterPayment,
@@ -50,6 +56,7 @@ function CheckoutForm({
   event: CheckoutEventForClient;
   eventId: string;
   userId: string;
+  paymentIntentId: string;
   onSuccess: () => void;
   onError: (error: string) => void;
   reconcileAfterPayment: (eventId: string, userId: string) => Promise<void>;
@@ -72,26 +79,62 @@ function CheckoutForm({
     setPending(true);
     setError(null);
 
-    const result = await stripe.confirmPayment({
-      elements,
-      confirmParams: { return_url: returnUrl },
-      redirect: 'if_required',
-    });
+    try {
+      const preConfirmRes = await fetch('/api/payments/pre-confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId, paymentIntentId }),
+      });
+      const preConfirmPayload = (await preConfirmRes.json().catch(() => null)) as
+        | {
+            success?: boolean;
+            error?: string;
+          }
+        | null;
 
-    // If no redirect is needed, payment succeeded in-client
-    if (result.paymentIntent?.status === 'succeeded') {
-      setPending(false);
-      // Fetch authoritative event and reconcile with context
-      await reconcileAfterPayment(eventId, userId);
-      onSuccess();
-      return;
-    }
+      if (!preConfirmRes.ok || !preConfirmPayload?.success) {
+        const message =
+          typeof preConfirmPayload?.error === 'string' &&
+          preConfirmPayload.error.trim().length > 0
+            ? preConfirmPayload.error
+            : 'This checkout session can no longer be confirmed.';
+        setError(message);
+        setPending(false);
+        onError(message);
+        clearRsvpPending(eventId, userId);
+        return;
+      }
 
-    if (result.error?.message) {
-      setError(result.error.message);
+      const result = await stripe.confirmPayment({
+        elements,
+        confirmParams: { return_url: returnUrl },
+        redirect: 'if_required',
+      });
+
+      // If no redirect is needed, payment succeeded in-client
+      if (result.paymentIntent?.status === 'succeeded') {
+        setPending(false);
+        // Fetch authoritative event and reconcile with context
+        await reconcileAfterPayment(eventId, userId);
+        onSuccess();
+        return;
+      }
+
+      if (result.error?.message) {
+        setError(result.error.message);
+        setPending(false);
+        onError(result.error.message);
+        // Clear pending on error
+        clearRsvpPending(eventId, userId);
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : 'Payment confirmation failed. Please try again.';
+      setError(message);
       setPending(false);
-      onError(result.error.message);
-      // Clear pending on error
+      onError(message);
       clearRsvpPending(eventId, userId);
     }
   };
@@ -113,7 +156,7 @@ function CheckoutForm({
           'disabled:opacity-50 disabled:cursor-not-allowed'
         )}
       >
-        {pending ? 'Processing…' : `Pay ${formatAmount(event.priceCents ?? 0, (event.currency ?? 'USD').toUpperCase())}`}
+        {pending ? 'Processing...' : `Pay ${formatPrice(event.priceCents ?? 0, (event.currency ?? 'USD').toUpperCase())}`}
       </button>
 
       <p className="text-xs text-zinc-500">
@@ -128,6 +171,7 @@ export default function CheckoutClient({
   userId,
   state,
   event,
+  paymentIntentId,
   clientSecret,
   publishableKey,
 }: {
@@ -135,24 +179,27 @@ export default function CheckoutClient({
   userId: string;
   state: TicketState;
   event: CheckoutEventForClient;
+  paymentIntentId: string;
   clientSecret: string;
   publishableKey: string;
 }) {
   const router = useRouter();
+  const { mutate } = useSWRConfig();
   const { clearRsvpPending } = useRsvpActions();
   const { upsertEvents } = useStoreWriters();
+  const secondPassTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
   const [returnIntentId, setReturnIntentId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
 
-  // Gate: only show if PAYMENT_IN_PROGRESS
-  if (state !== 'PAYMENT_IN_PROGRESS') {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 px-4">
-        <p className="text-sm text-zinc-300">Payment state invalid</p>
-      </div>
-    );
-  }
+  useEffect(() => {
+    return () => {
+      if (secondPassTimerRef.current) {
+        clearTimeout(secondPassTimerRef.current);
+        secondPassTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Reconciliation after payment (used by both form success and 3DS return)
   const reconcileAfterPayment = useCallback(
@@ -171,11 +218,27 @@ export default function CheckoutClient({
       } catch (err) {
         console.error('Error reconciling event after payment:', err);
       } finally {
+        try {
+          await revalidateAfterCheckout({ mutate, eventId, userId });
+        } catch (revalidateError) {
+          console.error('Error revalidating checkout-related caches:', revalidateError);
+        }
+
+        if (secondPassTimerRef.current) {
+          clearTimeout(secondPassTimerRef.current);
+          secondPassTimerRef.current = null;
+        }
+        secondPassTimerRef.current = scheduleSecondPassRevalidate({
+          mutate,
+          eventId,
+          userId,
+        });
+
         // Clear pending regardless (webhook will reconcile if needed)
         clearRsvpPending(eventId, userId);
       }
     },
-    [upsertEvents, clearRsvpPending]
+    [upsertEvents, clearRsvpPending, mutate]
   );
 
   // On mount, check for the non-sensitive return intent cookie (set by /return handler after 3DS redirect)
@@ -246,8 +309,19 @@ export default function CheckoutClient({
     };
   }, [clientSecret, appearance]);
 
+  // Gate: only show if PAYMENT_IN_PROGRESS
+  if (state !== 'PAYMENT_IN_PROGRESS') {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 px-4">
+        <p className="text-sm text-zinc-300">Payment state invalid</p>
+      </div>
+    );
+  }
+
   const currency = (event.currency ?? 'USD').toUpperCase();
   const cents = event.priceCents ?? 0;
+  const formattedTotal = formatPrice(cents, currency) || `${(cents / 100).toFixed(2)} ${currency}`;
+  const contactPhoneAppsLabel = getContactPhoneAppsLabel(event.contactPhoneApps);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -307,9 +381,14 @@ export default function CheckoutClient({
             {event.category && (
               <div className="flex items-center gap-3">
                 <Tag className="h-4 w-4 text-emerald-500 shrink-0" />
-                <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-emerald-950/40 border border-emerald-800/50 text-xs font-medium text-emerald-300">
-                  {event.category.charAt(0).toUpperCase() + event.category.slice(1)}
-                </span>
+                <Badge
+                  className={cn(
+                    'cursor-default whitespace-nowrap border px-2 py-0.5 text-xs font-medium',
+                    getCategoryBadgeColors(event.category)
+                  )}
+                >
+                  {capitalizeFirstLetter(event.category)}
+                </Badge>
               </div>
             )}
           </div>
@@ -338,7 +417,8 @@ export default function CheckoutClient({
                         <div className="text-sm font-medium text-white truncate">
                           {event.creator.firstName && event.creator.lastName
                             ? `${event.creator.firstName} ${event.creator.lastName}`
-                            : event.creator.username}
+                            : `@${event.creator.username}`
+                          }
                         </div>
                       </div>
                     </div>
@@ -367,9 +447,9 @@ export default function CheckoutClient({
                         >
                           <Phone className="h-4 w-4 text-zinc-500 shrink-0" />
                           <span className="truncate">{event.contactPhone}</span>
-                          {event.contactPhoneApps ? (
+                          {contactPhoneAppsLabel ? (
                             <span className="text-xs text-zinc-500 ml-auto shrink-0">
-                              {event.contactPhoneApps.charAt(0).toUpperCase() + event.contactPhoneApps.slice(1)}
+                              {contactPhoneAppsLabel}
                             </span>
                           ) : null}
                         </a>
@@ -387,11 +467,6 @@ export default function CheckoutClient({
               <Clock className="h-3.5 w-3.5" />
               <span className="truncate">{event.eventTimeZone || 'UTC'}</span>
             </div>
-            {event.isPaid ? (
-              <span className="px-2 py-1 rounded-full bg-emerald-950/40 border border-emerald-800/50 text-emerald-300">
-                Paid Event
-              </span>
-            ) : null}
           </div>
 
           {/* Description (clamped on desktop to avoid overflow) */}
@@ -406,28 +481,12 @@ export default function CheckoutClient({
           {/* Pricing Card - KEPT EXACTLY AS-IS (only moved to bottom) */}
           <div className="mt-auto pt-2">
             <div className="mt-2 rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
-              <div className="text-xs text-zinc-400">Total due today</div>
-              <div className="mt-2 flex items-baseline gap-2">
-                <div className="text-4xl font-semibold text-white">
-                  {(cents / 100).toFixed(2)}
-                </div>
-                <div className="text-sm text-zinc-400 uppercase">{currency}</div>
-              </div>
-
-              <div className="mt-4 space-y-2 text-sm text-zinc-400">
-                <div className="flex items-center justify-between">
-                  <span>Subtotal</span>
-                  <span>{formatAmount(cents, currency)}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Tax</span>
-                  <span>{formatAmount(0, currency)}</span>
-                </div>
-                <div className="h-px bg-zinc-800" />
-                <div className="flex items-center justify-between text-white">
-                  <span>Total</span>
-                  <span>{formatAmount(cents, currency)}</span>
-                </div>
+              <div className="text-xs uppercase tracking-wide text-zinc-400">Amount due today</div>
+              <div className="mt-2 text-4xl font-semibold text-white">{formattedTotal}</div>
+              <div className="mt-4 h-px bg-zinc-800" />
+              <div className="mt-4 flex items-center justify-between text-sm text-white">
+                <span>Total</span>
+                <span>{formattedTotal}</span>
               </div>
             </div>
           </div>
@@ -444,10 +503,10 @@ export default function CheckoutClient({
         {showSuccess || returnIntentId ? (
           // Success state
           <div className="flex flex-col items-center justify-center py-12 px-4">
-            <CheckCircle2 className="h-12 w-12 text-emerald-500 mb-4" />
+            <AnimatedIcon icon={CheckAnimatedIcon} size={48} state="in" persistAfterIn  className='mb-4'/>
             <h2 className="text-xl font-semibold text-white mb-2">Payment submitted</h2>
             <p className="text-sm text-zinc-400 text-center mb-6">
-              We are processing your payment confirmation. Your RSVP will be confirmed once payment succeeds.
+              We are processing your payment result. Attendance is confirmed only after final server validation. If joining is no longer allowed, your payment will be refunded automatically.
             </p>
             <button
               onClick={() => router.push(`/agenda`)}
@@ -466,6 +525,7 @@ export default function CheckoutClient({
               event={event} 
               eventId={eventId}
               userId={userId}
+              paymentIntentId={paymentIntentId}
               onSuccess={() => setShowSuccess(true)}
               onError={(err) => setError(err)}
               reconcileAfterPayment={reconcileAfterPayment}

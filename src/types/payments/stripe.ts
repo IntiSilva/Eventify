@@ -8,7 +8,9 @@ import type { RSVPStatus } from '@/generated/prisma';
 export type PaymentErrorCode =
   | 'NOT_FOUND'
   | 'NOT_PAYABLE'
+  | 'EVENT_NOT_JOINABLE'
   | 'ALREADY_PAID'
+  | 'CONNECT_NOT_READY'
   | 'STRIPE_CONFIG'
   | 'STRIPE_API';
 
@@ -27,6 +29,12 @@ export type TicketState =
   | 'PAYMENT_IN_PROGRESS'
   | 'ALREADY_PAID_ATTENDING'
   | 'ALREADY_PAID_NOT_ATTENDING';
+
+export type ViewerTicketState =
+  | 'none'
+  | 'paid'
+  | 'refund_pending'
+  | 'refunded';
 
 export type TicketStateResult =
   | ({ state: 'PAYMENT_IN_PROGRESS' } & CreateOrReusePaymentIntentResult)

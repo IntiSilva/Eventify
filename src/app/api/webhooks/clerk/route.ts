@@ -48,12 +48,50 @@ function logWebhookError(prefix: string, err: unknown) {
   }
 }
 
+type ExistingUserIdentitySnapshot = {
+  firstName: string | null;
+  lastName: string | null;
+  imageUrl: string | null;
+  hasImage: boolean | null;
+};
+
+function normalizeOptionalName(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, 50) : null;
+}
+
+function buildMissingIdentityFieldsUpdate(
+  existing: ExistingUserIdentitySnapshot,
+  next: ExistingUserIdentitySnapshot
+): Prisma.UserUpdateInput {
+  const updateData: Prisma.UserUpdateInput = {};
+
+  if (!existing.firstName && next.firstName) {
+    updateData.firstName = next.firstName;
+  }
+
+  if (!existing.lastName && next.lastName) {
+    updateData.lastName = next.lastName;
+  }
+
+  if (!existing.imageUrl && next.imageUrl) {
+    updateData.imageUrl = next.imageUrl;
+  }
+
+  if (existing.hasImage === null) {
+    updateData.hasImage = next.hasImage;
+  }
+
+  return updateData;
+}
+
 // --- Helper: synchronous handler for user.created ---
 // It reconciles or creates the provisional user in your DB
 // and then sets public_metadata.onboarding = false in Clerk.
 async function handleUserCreated(userData: UserJSON) {
   const clerkId = userData.id;
   const email = getPrimaryEmail(userData);
+  let shouldMarkOnboardingPending = false;
 
   // Safety guard: if Clerk somehow didn't send an id, we can't reconcile anything.
   if (!clerkId) {
@@ -72,7 +110,9 @@ async function handleUserCreated(userData: UserJSON) {
   const username = (userData.username || clerkId).substring(0, 25);
   const normalizedUsername = normalizeUsername(username);
 
-  // Normalize avatar information coming from Clerk.
+  // Normalize identity information coming from Clerk.
+  const nextFirstName = normalizeOptionalName(userData.first_name);
+  const nextLastName = normalizeOptionalName(userData.last_name);
   const nextHasImage = !!userData.has_image;
   const nextImageUrl = nextHasImage ? userData.image_url : null;
 
@@ -80,37 +120,41 @@ async function handleUserCreated(userData: UserJSON) {
   const byClerk = await prisma.user.findUnique({ where: { clerkId } });
 
   if (byClerk) {
+    // Only backfill missing identity fields and otherwise keep the row untouched.
     // Existing row already linked to this Clerk user → just refresh profile fields.
-    await prisma.user.update({
-      where: { clerkId },
-      data: {
-        email,
-        firstName: userData.first_name,
-        lastName: userData.last_name,
-        imageUrl: nextImageUrl,
-        hasImage: nextHasImage,
-        username,
-        normalizedUsername,
-      },
+    const updateData = buildMissingIdentityFieldsUpdate(byClerk, {
+      firstName: nextFirstName,
+      lastName: nextLastName,
+      imageUrl: nextImageUrl,
+      hasImage: nextHasImage,
     });
+
+    if (Object.keys(updateData).length > 0) {
+      await prisma.user.update({
+        where: { clerkId },
+        data: updateData,
+      });
+    }
   } else {
     // 2) No row for this clerkId → try reconciling by email (legacy / pre-Clerk account).
     const byEmail = await prisma.user.findUnique({ where: { email } });
 
     if (byEmail) {
       // We found a pre-existing account for this email, so we attach the new clerkId
-      // and refresh the profile fields.
-      await prisma.user.update({
-        where: { email },
-        data: {
-          clerkId,
-          firstName: userData.first_name,
-          lastName: userData.last_name,
+      // and only backfill missing identity fields.
+      const updateData: Prisma.UserUpdateInput = {
+        clerkId,
+        ...buildMissingIdentityFieldsUpdate(byEmail, {
+          firstName: nextFirstName,
+          lastName: nextLastName,
           imageUrl: nextImageUrl,
           hasImage: nextHasImage,
-          username,
-          normalizedUsername,
-        },
+        }),
+      };
+
+      await prisma.user.update({
+        where: { email },
+        data: updateData,
       });
     } else {
       // 3) Completely new account: create the provisional user row.
@@ -120,17 +164,24 @@ async function handleUserCreated(userData: UserJSON) {
           email,
           username,
           normalizedUsername,
-          firstName: userData.first_name,
-          lastName: userData.last_name,
+          firstName: nextFirstName,
+          lastName: nextLastName,
           imageUrl: nextImageUrl,
           hasImage: nextHasImage,
           role: UserRole.user, // default role for newly created users
         },
       });
+      shouldMarkOnboardingPending = true;
     }
   }
 
-  // 4) Only after the DB write succeeds, sync Clerk public metadata.
+  // 4) Only brand-new provisional rows should be marked as "pending onboarding".
+  // If the row already existed, the app may have completed onboarding first.
+  if (!shouldMarkOnboardingPending) {
+    return;
+  }
+
+  // Only after the DB write succeeds, sync Clerk public metadata.
   if (!process.env.CLERK_SECRET_KEY) {
     console.error(
       '[Webhook] user.created: CLERK_SECRET_KEY missing, skipping metadata update',

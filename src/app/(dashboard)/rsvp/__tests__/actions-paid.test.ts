@@ -1,5 +1,6 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { ToggleRsvpResult } from '@/types/rsvp';
+import { RSVPAttendanceEntitlementStatus } from '@/generated/prisma';
 
 const h = vi.hoisted(() => ({
   authUserId: 'user_123',
@@ -8,7 +9,7 @@ const h = vi.hoisted(() => ({
       findUnique: vi.fn(),
       findFirst: vi.fn(),
       create: vi.fn(),
-      delete: vi.fn(),
+      update: vi.fn(),
       count: vi.fn(),
       upsert: vi.fn(),
     },
@@ -59,14 +60,18 @@ type CreatedOK = Extract<ToggleRsvpResult, { success: true; action: 'created' }>
 type CancelledOK = Extract<ToggleRsvpResult, { success: true; action: 'cancelled' }>;
 type PaymentRequiredOK = Extract<ToggleRsvpResult, { success: true; action: 'payment_required' }>;
 
+const FUTURE_EVENT_DATE = new Date('2099-01-01T12:00:00.000Z');
+const PAST_EVENT_DATE = new Date('2000-01-01T12:00:00.000Z');
+
 describe('rsvp/actions.toggleRSVP with paid events', () => {
   beforeEach(() => {
     h.prisma.rSVP.findUnique.mockReset();
     h.prisma.rSVP.create.mockReset();
-    h.prisma.rSVP.delete.mockReset();
+    h.prisma.rSVP.update.mockReset();
     h.prisma.rSVP.count.mockReset();
     h.prisma.event.findUnique.mockReset();
     h.prisma.event.update.mockReset();
+    h.prisma.payment.findFirst.mockReset();
     h.authUserId = 'user_123';
   });
 
@@ -79,6 +84,8 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       h.prisma.event.findUnique.mockResolvedValueOnce({
         id: EVENT_ID,
         isPaid: false,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
       });
 
       h.prisma.rSVP.create.mockResolvedValueOnce({
@@ -125,12 +132,13 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
   describe('New RSVP on paid events', () => {
     it('returns payment_required for paid event without creating RSVP', async () => {
       const EVENT_ID = 'evt_paid_1';
-      const USER_ID = h.authUserId;
 
       h.prisma.rSVP.findUnique.mockResolvedValueOnce(null);
       h.prisma.event.findUnique.mockResolvedValueOnce({
         id: EVENT_ID,
         isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
       });
 
       const result = await toggleRSVP(EVENT_ID);
@@ -150,6 +158,52 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       expect(h.prisma.rSVP.create).not.toHaveBeenCalled();
     });
 
+    it('creates RSVP immediately when paid event viewer is the creator', async () => {
+      const EVENT_ID = 'evt_paid_creator';
+      const USER_ID = h.authUserId;
+
+      h.prisma.rSVP.findUnique.mockResolvedValueOnce(null);
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
+        createdBy: USER_ID,
+      });
+      h.prisma.rSVP.create.mockResolvedValueOnce({
+        id: 'rsvp_creator_paid',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'confirmed',
+        reminderPreferenceType: null,
+        reminderOffsetMinutes: null,
+        reminderScheduledAt: null,
+        reminderSentAt: null,
+        user: {
+          clerkId: USER_ID,
+          username: 'creator',
+          firstName: null,
+          lastName: null,
+          imageUrl: null,
+          hasImage: false,
+          role: 'organizer',
+        },
+      });
+      h.prisma.rSVP.count.mockResolvedValueOnce(1);
+      h.prisma.event.update.mockResolvedValueOnce({
+        id: EVENT_ID,
+        featured: false,
+      });
+
+      const result = await toggleRSVP(EVENT_ID);
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('Expected success=true');
+      expect(result.action).toBe('created');
+      expect(h.prisma.rSVP.create).toHaveBeenCalled();
+      expect(h.prisma.rSVP.count).toHaveBeenCalled();
+    });
+
     it('returns payment_required without querying attendee count', async () => {
       const EVENT_ID = 'evt_paid_2';
 
@@ -157,6 +211,8 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       h.prisma.event.findUnique.mockResolvedValueOnce({
         id: EVENT_ID,
         isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
       });
 
       const result = await toggleRSVP(EVENT_ID);
@@ -171,6 +227,44 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       expect(h.prisma.rSVP.count).not.toHaveBeenCalled();
       expect(h.prisma.event.update).not.toHaveBeenCalled();
     });
+
+    it('blocks new RSVP when paid event already started', async () => {
+      const EVENT_ID = 'evt_paid_started';
+
+      h.prisma.rSVP.findUnique.mockResolvedValueOnce(null);
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: PAST_EVENT_DATE,
+        archivedAt: null,
+      });
+
+      const result = await toggleRSVP(EVENT_ID);
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('Expected success=false');
+      expect(result.message).toMatch(/already started/i);
+      expect(h.prisma.rSVP.create).not.toHaveBeenCalled();
+    });
+
+    it('blocks new RSVP when free event is archived', async () => {
+      const EVENT_ID = 'evt_free_archived';
+
+      h.prisma.rSVP.findUnique.mockResolvedValueOnce(null);
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: false,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: new Date('2026-03-01T00:00:00.000Z'),
+      });
+
+      const result = await toggleRSVP(EVENT_ID);
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('Expected success=false');
+      expect(result.message).toMatch(/archived/i);
+      expect(h.prisma.rSVP.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('Cancel RSVP on both free and paid events', () => {
@@ -179,7 +273,10 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       const USER_ID = h.authUserId;
 
       h.prisma.rSVP.findUnique.mockResolvedValueOnce(makeRsvp('rsvp_1', EVENT_ID, USER_ID));
-      h.prisma.rSVP.delete.mockResolvedValueOnce(makeRsvp('rsvp_1', EVENT_ID, USER_ID));
+      h.prisma.rSVP.update.mockResolvedValueOnce({
+        ...makeRsvp('rsvp_1', EVENT_ID, USER_ID),
+        status: 'canceled',
+      });
       h.prisma.rSVP.count.mockResolvedValueOnce(0);
       h.prisma.event.update.mockResolvedValueOnce({
         id: EVENT_ID,
@@ -196,7 +293,7 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
 
       const ok: CancelledOK = result;
       expect(ok.rsvpCancelled).toBe(true);
-      expect(h.prisma.rSVP.delete).toHaveBeenCalled();
+      expect(h.prisma.rSVP.update).toHaveBeenCalled();
     });
 
     it('cancels RSVP on paid event (does not require payment)', async () => {
@@ -204,7 +301,10 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       const USER_ID = h.authUserId;
 
       h.prisma.rSVP.findUnique.mockResolvedValueOnce(makeRsvp('rsvp_1', EVENT_ID, USER_ID));
-      h.prisma.rSVP.delete.mockResolvedValueOnce(makeRsvp('rsvp_1', EVENT_ID, USER_ID));
+      h.prisma.rSVP.update.mockResolvedValueOnce({
+        ...makeRsvp('rsvp_1', EVENT_ID, USER_ID),
+        status: 'canceled',
+      });
       h.prisma.rSVP.count.mockResolvedValueOnce(2);
       h.prisma.event.update.mockResolvedValueOnce({
         id: EVENT_ID,
@@ -218,7 +318,235 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       if (!result.success) throw new Error('Expected success=true');
 
       expect(result.action).toBe('cancelled');
-      expect(h.prisma.rSVP.delete).toHaveBeenCalled();
+      expect(h.prisma.rSVP.update).toHaveBeenCalled();
+    });
+  });
+
+  describe('Re-enable RSVP from existing row', () => {
+    it('restores a canceled RSVP when entitlement is active', async () => {
+      const EVENT_ID = 'evt_paid_restore_active';
+      const USER_ID = h.authUserId;
+
+      h.prisma.rSVP.findUnique.mockResolvedValueOnce({
+        id: 'rsvp_active',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'canceled',
+        attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.active,
+      });
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
+      });
+      h.prisma.rSVP.update.mockResolvedValueOnce({
+        id: 'rsvp_active',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'confirmed',
+        attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.active,
+        reminderPreferenceType: null,
+        reminderOffsetMinutes: null,
+        reminderScheduledAt: null,
+        reminderSentAt: null,
+        user: {
+          clerkId: USER_ID,
+          username: 'buyer',
+          firstName: null,
+          lastName: null,
+          imageUrl: null,
+          hasImage: false,
+          role: 'user',
+        },
+      });
+      h.prisma.rSVP.count.mockResolvedValueOnce(1);
+      h.prisma.event.update.mockResolvedValueOnce({
+        id: EVENT_ID,
+        featured: false,
+      });
+
+      const result = await toggleRSVP(EVENT_ID);
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('Expected success=true');
+      expect(result.action).toBe('created');
+      expect(h.prisma.rSVP.create).not.toHaveBeenCalled();
+      expect(h.prisma.rSVP.update).toHaveBeenCalled();
+    });
+
+    it('blocks re-enable while entitlement is refund_pending_hold', async () => {
+      const EVENT_ID = 'evt_paid_restore_hold';
+      const USER_ID = h.authUserId;
+
+      h.prisma.rSVP.findUnique.mockResolvedValueOnce({
+        id: 'rsvp_hold',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'canceled',
+        attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.refund_pending_hold,
+      });
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
+      });
+
+      const result = await toggleRSVP(EVENT_ID);
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('Expected success=false');
+      expect(result.message).toMatch(/refund is still processing/i);
+      expect(h.prisma.rSVP.update).not.toHaveBeenCalled();
+      expect(h.prisma.rSVP.create).not.toHaveBeenCalled();
+    });
+
+    it('blocks re-enable when entitlement is revoked_refunded', async () => {
+      const EVENT_ID = 'evt_paid_restore_revoked';
+      const USER_ID = h.authUserId;
+
+      h.prisma.rSVP.findUnique.mockResolvedValueOnce({
+        id: 'rsvp_revoked',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'canceled',
+        attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.revoked_refunded,
+      });
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
+      });
+
+      const result = await toggleRSVP(EVENT_ID);
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('Expected success=false');
+      expect(result.message).toMatch(/purchase again/i);
+      expect(h.prisma.rSVP.update).not.toHaveBeenCalled();
+      expect(h.prisma.rSVP.create).not.toHaveBeenCalled();
+    });
+
+    it('allows creator to restore RSVP even if entitlement is revoked_refunded', async () => {
+      const EVENT_ID = 'evt_paid_creator_restore_revoked';
+      const USER_ID = h.authUserId;
+
+      h.prisma.rSVP.findUnique.mockResolvedValueOnce({
+        id: 'rsvp_creator_revoked',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'canceled',
+        attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.revoked_refunded,
+      });
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
+        createdBy: USER_ID,
+      });
+      h.prisma.rSVP.update.mockResolvedValueOnce({
+        id: 'rsvp_creator_revoked',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'confirmed',
+        attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.active,
+        reminderPreferenceType: null,
+        reminderOffsetMinutes: null,
+        reminderScheduledAt: null,
+        reminderSentAt: null,
+        user: {
+          clerkId: USER_ID,
+          username: 'creator',
+          firstName: null,
+          lastName: null,
+          imageUrl: null,
+          hasImage: false,
+          role: 'organizer',
+        },
+      });
+      h.prisma.rSVP.count.mockResolvedValueOnce(1);
+      h.prisma.event.update.mockResolvedValueOnce({
+        id: EVENT_ID,
+        featured: false,
+      });
+
+      const result = await toggleRSVP(EVENT_ID);
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('Expected success=true');
+      expect(result.action).toBe('created');
+      expect(h.prisma.rSVP.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'rsvp_creator_revoked' },
+          data: expect.objectContaining({
+            status: 'confirmed',
+            attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.active,
+          }),
+        })
+      );
+    });
+
+    it('treats confirmed but non-active creator RSVP as restore, not cancel', async () => {
+      const EVENT_ID = 'evt_paid_creator_confirmed_revoked';
+      const USER_ID = h.authUserId;
+
+      h.prisma.rSVP.findUnique.mockResolvedValueOnce({
+        id: 'rsvp_creator_confirmed_revoked',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'confirmed',
+        attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.revoked_refunded,
+      });
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
+        createdBy: USER_ID,
+      });
+      h.prisma.rSVP.update.mockResolvedValueOnce({
+        id: 'rsvp_creator_confirmed_revoked',
+        eventId: EVENT_ID,
+        userId: USER_ID,
+        status: 'confirmed',
+        attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.active,
+        reminderPreferenceType: null,
+        reminderOffsetMinutes: null,
+        reminderScheduledAt: null,
+        reminderSentAt: null,
+        user: {
+          clerkId: USER_ID,
+          username: 'creator',
+          firstName: null,
+          lastName: null,
+          imageUrl: null,
+          hasImage: false,
+          role: 'organizer',
+        },
+      });
+      h.prisma.rSVP.count.mockResolvedValueOnce(1);
+      h.prisma.event.update.mockResolvedValueOnce({
+        id: EVENT_ID,
+        featured: false,
+      });
+
+      const result = await toggleRSVP(EVENT_ID);
+
+      expect(result.success).toBe(true);
+      if (!result.success) throw new Error('Expected success=true');
+      expect(result.action).toBe('created');
+      expect(h.prisma.rSVP.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'rsvp_creator_confirmed_revoked' },
+          data: expect.objectContaining({
+            status: 'confirmed',
+            attendanceEntitlementStatus: RSVPAttendanceEntitlementStatus.active,
+          }),
+        })
+      );
     });
   });
 
@@ -246,6 +574,8 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       h.prisma.event.findUnique.mockResolvedValueOnce({
         id: EVENT_ID,
         isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
       });
 
       // Find succeeded payment (exists even though RSVP was deleted)
@@ -261,9 +591,15 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       // This would normally do transaction: upsert RSVP + link Payment + recalc featured
       const { linkRsvpToSucceededPayment } = await import('@/lib/payments/confirmPaidRsvp');
       let linkCalled = false;
-      (linkRsvpToSucceededPayment as any).mockImplementation(async () => {
+      vi.mocked(linkRsvpToSucceededPayment).mockImplementation(async () => {
         linkCalled = true;
-        return { paymentId: PAYMENT_ID, rsvpId: 'rsvp_new', confirmedCount: 1, eventId: EVENT_ID };
+        return {
+          linked: true,
+          paymentId: PAYMENT_ID,
+          rsvpId: 'rsvp_new',
+          confirmedCount: 1,
+          eventId: EVENT_ID,
+        };
       });
 
       // Count for featured recalc
@@ -309,6 +645,8 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       h.prisma.event.findUnique.mockResolvedValueOnce({
         id: EVENT_ID,
         isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
       });
 
       h.prisma.payment.findFirst.mockResolvedValueOnce(null);
@@ -326,12 +664,50 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       h.prisma.event.findUnique.mockResolvedValueOnce({
         id: EVENT_ID,
         isPaid: false,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
       });
 
       const result = await reactivateAlreadyPaidRsvp(EVENT_ID);
 
       expect(result.success).toBe(false);
       expect(result.message).toContain('not a paid event');
+    });
+
+    it('blocks reactivation when event already started', async () => {
+      const EVENT_ID = 'evt_paid_started_reactivate';
+
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: PAST_EVENT_DATE,
+        archivedAt: null,
+      });
+
+      const result = await reactivateAlreadyPaidRsvp(EVENT_ID);
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('Expected success=false');
+      expect(result.message).toMatch(/already started/i);
+      expect(h.prisma.payment.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('blocks reactivation when event is archived', async () => {
+      const EVENT_ID = 'evt_paid_archived_reactivate';
+
+      h.prisma.event.findUnique.mockResolvedValueOnce({
+        id: EVENT_ID,
+        isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: new Date('2026-03-01T00:00:00.000Z'),
+      });
+
+      const result = await reactivateAlreadyPaidRsvp(EVENT_ID);
+
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('Expected success=false');
+      expect(result.message).toMatch(/archived/i);
+      expect(h.prisma.payment.findFirst).not.toHaveBeenCalled();
     });
   });
 
@@ -344,6 +720,8 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       h.prisma.event.findUnique.mockResolvedValueOnce({
         id: EVENT_ID,
         isPaid: true,
+        date: FUTURE_EVENT_DATE,
+        archivedAt: null,
       });
 
       h.prisma.payment.findFirst.mockResolvedValueOnce({
@@ -355,7 +733,8 @@ describe('rsvp/actions.toggleRSVP with paid events', () => {
       });
 
       const { linkRsvpToSucceededPayment } = await import('@/lib/payments/confirmPaidRsvp');
-      (linkRsvpToSucceededPayment as any).mockImplementation(async () => ({
+      vi.mocked(linkRsvpToSucceededPayment).mockImplementation(async () => ({
+        linked: true,
         paymentId: PAYMENT_ID,
         rsvpId: 'rsvp_ui_new',
         confirmedCount: 5,  // Updated count for attendees

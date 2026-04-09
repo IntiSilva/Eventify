@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event'
 const h = vi.hoisted(() => ({
   pushMock: vi.fn(),
   createEventMock: vi.fn(),
+  getEventPricingPreviewMock: vi.fn(),
   revalidateEventListsMock: vi.fn(),
   toast: {
     loading: vi.fn(() => 'toast-id'),
@@ -69,6 +70,7 @@ vi.mock('@/lib/utils', async () => {
 
 vi.mock('@/app/(dashboard)/events/actions', () => ({
   createEvent: (...args: unknown[]) => h.createEventMock(...args),
+  getEventPricingPreview: (...args: unknown[]) => h.getEventPricingPreviewMock(...args),
 }))
 
 vi.mock('sonner', () => ({ toast: h.toast }))
@@ -289,17 +291,19 @@ vi.mock('@/components/DashboardPageWrapper', () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
+vi.mock('@/components/InfoTooltip', () => ({
+  PaidEventPricingTooltip: () => null,
+}))
+
 // ---------- SUT + test utils ----------
 import CreateEventForm from '@/components/FormsRelated/CreateEventForm'
-import { renderWithProviders, screen, waitFor, act } from '@/test/test-utils'
+import { renderWithProviders, screen, waitFor, act, fireEvent } from '@/test/test-utils'
 
 // ---------- Helpers ----------
-async function fillRequiredFields() {
-  const user = userEvent.setup()
-
-  await user.type(screen.getByLabelText('Title'), 'My awesome event')
-  await user.type(screen.getByLabelText('Description'), 'An engaging description')
-  await user.type(screen.getByLabelText('Location'), 'Buenos Aires')
+async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText('Title'), 'Event')
+  await user.type(screen.getByLabelText('Description'), 'Desc')
+  await user.type(screen.getByLabelText('Location'), 'BA')
 
   const categorySelect = screen.getByLabelText(/category/i) as HTMLSelectElement
   await user.selectOptions(categorySelect, 'music')
@@ -307,18 +311,14 @@ async function fillRequiredFields() {
 
   const dateInput = screen.getByLabelText('Date and Time')
   await act(async () => {
-    await user.clear(dateInput)
-    await user.type(dateInput, '2099-10-10T10:00')
+    fireEvent.change(dateInput, { target: { value: '2099-10-10T10:00' } })
+    fireEvent.blur(dateInput)
   })
-  await user.tab() // commit: onBlur triggers onChange(Date)
-
-  await waitFor(() =>
-    expect((dateInput as HTMLInputElement).value).toBe('2099-10-10T10:00')
-  )
+  expect((dateInput as HTMLInputElement).value).toBe('2099-10-10T10:00')
 
   const emailInput = screen.getByLabelText('Contact Email')
   await user.clear(emailInput)
-  await user.type(emailInput, 'contact@example.com')
+  await user.type(emailInput, 'a@b.co')
 }
 
 // ---------- Tests ----------
@@ -326,6 +326,8 @@ describe('CreateEventForm', () => {
   beforeEach(() => {
     h.pushMock.mockReset()
     h.createEventMock.mockReset()
+    h.getEventPricingPreviewMock.mockReset()
+    h.getEventPricingPreviewMock.mockResolvedValue({ success: true, data: null })
     h.revalidateEventListsMock.mockReset()
     h.toast.loading.mockClear()
     h.toast.success.mockClear()
@@ -336,13 +338,27 @@ describe('CreateEventForm', () => {
     vi.clearAllMocks()
   })
 
+  it('disables the paid-event toggle until Stripe Connect is ready', () => {
+    renderWithProviders(
+      <CreateEventForm
+        profilePhoneNumber={'+541112223344'}
+        requireStripeConnectForPaidEvents
+      />
+    )
+
+    expect(screen.getByRole('switch')).toBeDisabled()
+    expect(
+      screen.getByText(/stripe connect is not fully enabled yet/i)
+    ).toBeInTheDocument()
+  })
+
   it('blocks submission with invalid manual phone when toggled off from profile phone', async () => {
     const user = userEvent.setup()
     h.createEventMock.mockResolvedValue({ success: true, message: 'ok', errors: null })
 
     renderWithProviders(<CreateEventForm profilePhoneNumber={'+541112223344'} />)
 
-    await fillRequiredFields()
+    await fillRequiredFields(user)
 
     await user.click(
       screen.getByRole('checkbox', {
@@ -367,7 +383,7 @@ describe('CreateEventForm', () => {
 
     renderWithProviders(<CreateEventForm profilePhoneNumber={'+549111223344'} />)
 
-    await fillRequiredFields()
+    await fillRequiredFields(user)
     await user.selectOptions(
       screen.getByLabelText('Contact method (for phone)'),
       'whatsapp'
@@ -402,7 +418,7 @@ describe('CreateEventForm', () => {
 
     renderWithProviders(<CreateEventForm profilePhoneNumber={'+541112223344'} />)
 
-    await fillRequiredFields()
+    await fillRequiredFields(user)
     await user.selectOptions(
       screen.getByLabelText('Contact method (for phone)'),
       'whatsapp'
@@ -423,7 +439,7 @@ describe('CreateEventForm', () => {
     // No profile phone to avoid enabling the shortcut
     renderWithProviders(<CreateEventForm profilePhoneNumber={null} />)
 
-    await fillRequiredFields()
+    await fillRequiredFields(user)
 
     // Remove the email so there's no contact method
     const emailInput = screen.getByLabelText('Contact Email')
@@ -448,7 +464,7 @@ describe('CreateEventForm', () => {
     h.createEventMock.mockResolvedValue({ success: true, message: 'Event created', errors: null })
 
     renderWithProviders(<CreateEventForm profilePhoneNumber={null} />)
-    await fillRequiredFields()
+    await fillRequiredFields(user)
 
     await user.click(screen.getByRole('button', { name: /create event/i }))
 

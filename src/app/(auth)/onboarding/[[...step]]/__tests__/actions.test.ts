@@ -65,9 +65,17 @@ const m = vi.hoisted(() => {
     unsafeMetadata?: Record<string, unknown>
   }
 
-  interface PrismaUserUpdateArgs {
+  interface PrismaUserUpsertArgs {
     where: { clerkId: string }
-    data: {
+    update: {
+      username: string
+      normalizedUsername: string
+      role: UserRoleLite
+      email: string
+      phoneNumber: string | null
+    }
+    create: {
+      clerkId: string
       username: string
       normalizedUsername: string
       role: UserRoleLite
@@ -94,8 +102,8 @@ const m = vi.hoisted(() => {
     async (_id: string, _data: UpdateUserMetadataParams): Promise<void> => {}
   )
 
-  const prismaUpdateUserMock = vi.fn(
-    async (_args: PrismaUserUpdateArgs): Promise<void> => {}
+  const prismaUpsertUserMock = vi.fn(
+    async (_args: PrismaUserUpsertArgs): Promise<void> => {}
   )
 
   const revalidatePathMock = vi.fn()
@@ -116,7 +124,7 @@ const m = vi.hoisted(() => {
     clerkGetUserMock,
     clerkUpdateUserMock,
     clerkUpdateUserMetaMock,
-    prismaUpdateUserMock,
+    prismaUpsertUserMock,
     revalidatePathMock,
     isClerkApiErrorMock,
     clerkErrorMessageMock,
@@ -147,7 +155,7 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('@/lib/prisma', () => ({
   prisma: {
     user: {
-      update: m.prismaUpdateUserMock,
+      upsert: m.prismaUpsertUserMock,
     },
   },
 }))
@@ -172,7 +180,7 @@ function resetHappyPath() {
     primaryEmailAddress: { emailAddress: h.EMAIL },
   })
   m.clerkUpdateUserMock.mockResolvedValue(void 0)
-  m.prismaUpdateUserMock.mockResolvedValue(void 0)
+  m.prismaUpsertUserMock.mockResolvedValue(void 0)
   m.clerkUpdateUserMetaMock.mockResolvedValue(void 0)
   m.revalidatePathMock.mockClear()
   m.isClerkApiErrorMock.mockClear()
@@ -196,7 +204,7 @@ describe('onboarding/submitOnboarding', () => {
     expect(res.success).toBe(false)
     expect(res.message).toBe('Unauthorized: User not found.')
     expect(m.clerkUpdateUserMock).not.toHaveBeenCalled()
-    expect(m.prismaUpdateUserMock).not.toHaveBeenCalled()
+    expect(m.prismaUpsertUserMock).not.toHaveBeenCalled()
   })
 
   it('returns error when Clerk user has no email', async () => {
@@ -206,7 +214,7 @@ describe('onboarding/submitOnboarding', () => {
     expect(res.success).toBe(false)
     expect(res.message).toBe('Email not found for user in Clerk.')
     expect(m.clerkUpdateUserMock).not.toHaveBeenCalled()
-    expect(m.prismaUpdateUserMock).not.toHaveBeenCalled()
+    expect(m.prismaUpsertUserMock).not.toHaveBeenCalled()
   })
 
   /**
@@ -263,11 +271,19 @@ describe('onboarding/submitOnboarding', () => {
     expect(m.clerkUpdateUserMock).toHaveBeenCalledWith(h.USER_ID, { username: h.USERNAME_VALID })
 
     // 2) DB update with normalized + email + role + phone=null
-    expect(m.prismaUpdateUserMock).toHaveBeenCalledWith({
+    expect(m.prismaUpsertUserMock).toHaveBeenCalledWith({
       where: { clerkId: h.USER_ID },
-      data: {
+      update: {
         username: h.USERNAME_VALID,
         normalizedUsername: h.NORMALIZED, // 'john.doe' (real normalizeUsername)
+        role: 'user',
+        email: h.EMAIL,
+        phoneNumber: null,
+      },
+      create: {
+        clerkId: h.USER_ID,
+        username: h.USERNAME_VALID,
+        normalizedUsername: h.NORMALIZED,
         role: 'user',
         email: h.EMAIL,
         phoneNumber: null,
@@ -287,15 +303,37 @@ describe('onboarding/submitOnboarding', () => {
     const res = await submitOnboarding(h.USERNAME_RAW, 'organizer', h.PHONE_VALID)
     expect(res.success).toBe(true)
 
-    expect(m.prismaUpdateUserMock).toHaveBeenCalledWith({
+    expect(m.prismaUpsertUserMock).toHaveBeenCalledWith({
       where: { clerkId: h.USER_ID },
-      data: {
+      update: {
         username: h.USERNAME_VALID,
         normalizedUsername: h.NORMALIZED,
         role: 'organizer',
         email: h.EMAIL,
         phoneNumber: '123456789', // trimmed
       },
+      create: {
+        clerkId: h.USER_ID,
+        username: h.USERNAME_VALID,
+        normalizedUsername: h.NORMALIZED,
+        role: 'organizer',
+        email: h.EMAIL,
+        phoneNumber: '123456789',
+      },
+    })
+  })
+
+  it('can persist organizer profile details without marking onboarding complete yet', async () => {
+    const res = await submitOnboarding(
+      h.USERNAME_RAW,
+      'organizer',
+      h.PHONE_VALID,
+      { completeOnboarding: false }
+    )
+
+    expect(res.success).toBe(true)
+    expect(m.clerkUpdateUserMetaMock).toHaveBeenCalledWith(h.USER_ID, {
+      publicMetadata: { role: 'organizer' },
     })
   })
 
@@ -318,12 +356,12 @@ describe('onboarding/submitOnboarding', () => {
     expect(res.success).toBe(false)
     expect(res.error?.field).toBe('username')
     expect(res.error?.message).toBe('Could not set username in Clerk. Please try a different one.')
-    expect(m.prismaUpdateUserMock).not.toHaveBeenCalled()
+    expect(m.prismaUpsertUserMock).not.toHaveBeenCalled()
   })
 
   // ─────────── Prisma P2002 & generic errors ───────────
   it('handles P2002 on username/normalizedUsername as "username taken"', async () => {
-    m.prismaUpdateUserMock.mockRejectedValueOnce(h.p2002User)
+    m.prismaUpsertUserMock.mockRejectedValueOnce(h.p2002User)
 
     const res = await submitOnboarding(h.USERNAME_RAW, 'user', null)
     expect(res.success).toBe(false)
@@ -336,7 +374,7 @@ describe('onboarding/submitOnboarding', () => {
     expect(resv.success).toBe(true) // baseline
 
     // now force the DB write to fail
-    m.prismaUpdateUserMock.mockRejectedValueOnce(h.p2002Phone)
+    m.prismaUpsertUserMock.mockRejectedValueOnce(h.p2002Phone)
 
     const res = await submitOnboarding(h.USERNAME_RAW, 'organizer', h.PHONE_VALID)
     expect(res.success).toBe(false)
@@ -345,7 +383,7 @@ describe('onboarding/submitOnboarding', () => {
   })
 
   it('handles generic Prisma error with general field', async () => {
-    m.prismaUpdateUserMock.mockRejectedValueOnce(new Error('db down'))
+    m.prismaUpsertUserMock.mockRejectedValueOnce(new Error('db down'))
 
     const res = await submitOnboarding(h.USERNAME_RAW, 'user', null)
     expect(res.success).toBe(false)

@@ -8,7 +8,7 @@ const h = vi.hoisted(() => ({
     rSVP: {
       findUnique: vi.fn(),
       create: vi.fn(),
-      delete: vi.fn(),
+      update: vi.fn(),
       count: vi.fn(),
     },
     event: {
@@ -62,19 +62,22 @@ describe('rsvp/actions.toggleRSVP', () => {
   beforeEach(() => {
     h.prisma.rSVP.findUnique.mockReset()
     h.prisma.rSVP.create.mockReset()
-    h.prisma.rSVP.delete.mockReset()
+    h.prisma.rSVP.update.mockReset()
     h.prisma.rSVP.count.mockReset()
     h.prisma.event.findUnique.mockReset()
     h.prisma.event.update.mockReset()
     h.authUserId = 'user_123'
   })
 
-  it('cancels an existing RSVP: deletes, recomputes count, returns action="cancelled"', async () => {
+  it('cancels an existing RSVP: marks as canceled, recomputes count, returns action="cancelled"', async () => {
     const EVENT_ID = 'evt_1'
     const USER_ID = h.authUserId
 
     h.prisma.rSVP.findUnique.mockResolvedValueOnce(makeRsvp('r_1', EVENT_ID, USER_ID))
-    h.prisma.rSVP.delete.mockResolvedValueOnce(makeRsvp('r_1', EVENT_ID, USER_ID))
+    h.prisma.rSVP.update.mockResolvedValueOnce({
+      ...makeRsvp('r_1', EVENT_ID, USER_ID),
+      status: 'canceled',
+    })
     h.prisma.rSVP.count.mockResolvedValueOnce(4)
     h.prisma.event.update.mockResolvedValueOnce({
       id: EVENT_ID,
@@ -95,7 +98,7 @@ describe('rsvp/actions.toggleRSVP', () => {
     const ok: CancelledOK = result
 
     expect(h.prisma.rSVP.findUnique).toHaveBeenCalledTimes(1)
-    expect(h.prisma.rSVP.delete).toHaveBeenCalledTimes(1)
+    expect(h.prisma.rSVP.update).toHaveBeenCalledTimes(1)
     expect(h.prisma.rSVP.create).not.toHaveBeenCalled()
     expect(h.prisma.rSVP.count).toHaveBeenCalledTimes(1)
     expect(h.prisma.event.update).toHaveBeenCalledTimes(1)
@@ -115,7 +118,11 @@ describe('rsvp/actions.toggleRSVP', () => {
     const USER_ID = h.authUserId
 
     h.prisma.rSVP.findUnique.mockResolvedValueOnce(null)
-    h.prisma.event.findUnique.mockResolvedValueOnce({ isPaid: false })
+    h.prisma.event.findUnique.mockResolvedValueOnce({
+      isPaid: false,
+      date: new Date('2099-01-01T12:00:00.000Z'),
+      archivedAt: null,
+    })
     h.prisma.rSVP.create.mockResolvedValueOnce(makeRsvp('r_new', EVENT_ID, USER_ID))
     h.prisma.rSVP.count.mockResolvedValueOnce(5)
     h.prisma.event.update.mockResolvedValueOnce({
@@ -137,7 +144,7 @@ describe('rsvp/actions.toggleRSVP', () => {
 
     expect(h.prisma.rSVP.findUnique).toHaveBeenCalledTimes(1)
     expect(h.prisma.rSVP.create).toHaveBeenCalledTimes(1)
-    expect(h.prisma.rSVP.delete).not.toHaveBeenCalled()
+    expect(h.prisma.rSVP.update).not.toHaveBeenCalled()
     expect(h.prisma.rSVP.count).toHaveBeenCalledTimes(1)
     expect(h.prisma.event.update).toHaveBeenCalledTimes(1)
 
@@ -165,6 +172,6 @@ describe('rsvp/actions.toggleRSVP', () => {
 
     expect(h.prisma.rSVP.findUnique).not.toHaveBeenCalled()
     expect(h.prisma.rSVP.create).not.toHaveBeenCalled()
-    expect(h.prisma.rSVP.delete).not.toHaveBeenCalled()
+    expect(h.prisma.rSVP.update).not.toHaveBeenCalled()
   })
 })

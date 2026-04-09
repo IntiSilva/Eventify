@@ -66,6 +66,11 @@ export const createEvent = (
     contactEmail: 'contact@example.com',
     contactPhone: null,
     contactPhoneApps: null,
+    isPaid: false,
+    priceCents: null,
+    currency: null,
+    currentPriceVersionId: null,
+    archivedAt: null,
     createdAt: now,
 
     creator: makeUser(),
@@ -469,6 +474,25 @@ describe('useHomeMainEventList', () => {
 
     // Assert TZ param is present
     expect(url.searchParams.get('viewTz')).toBe('UTC');
+  });
+
+  it('treats paid/free as an active filter and sends it in the fetch URL', async () => {
+    const payload = createInitialPayload(['paid-1', 'paid-2']);
+    updateSearchParams({ paid: 'free' });
+
+    const { result } = renderHookWithProviders(() => useHomeMainEventList(payload));
+    await flushMicrotasks();
+    flushRaf();
+
+    await waitFor(() => {
+      expect(registerMainKeyMock).toHaveBeenCalled();
+    });
+
+    const called = registerMainKeyMock.mock.calls[0][0];
+    const url = extractUrl(called);
+
+    expect(url.searchParams.get('paid')).toBe('free');
+    expect(result.current.isAnyFilterActive).toBe(true);
   });
 
   it('registers the main list key on mount and unregisters it on unmount', () => {

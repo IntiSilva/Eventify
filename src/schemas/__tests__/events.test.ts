@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 
 // ⬇️ Adjust this import if your alias/path differs
-import { createEventSchema } from '@/schemas/events'
+import { createEventSchema, editEventSchema } from '@/schemas/events'
 
 // If your project exports these enums from Prisma, import them.
 // If not, replace with string literals like: const Category = { music: 'music' as const }.
@@ -91,15 +91,14 @@ describe('createEventSchema (unit)', () => {
     }
   })
 
-  it('optionally: requires selecting contactPhoneApps when phone is provided (delete if your schema allows missing apps)', () => {
+  it('requires selecting contactPhoneApps when phone is provided', () => {
     const result = createEventSchema.safeParse({
       ...BASE,
       contactEmail: '',               // phone-only path
       contactPhone: '+541155555555',  // looks like a valid AR number
-      contactPhoneApps: undefined,    // <-- if your schema enforces apps, this should fail
+      contactPhoneApps: undefined,
     })
 
-    // If your schema does NOT enforce apps, change this to expect(result.success).toBe(true)
     expect(result.success).toBe(false)
     if (!result.success) {
       const text = JSON.stringify(result.error.issues)
@@ -149,4 +148,20 @@ describe('createEventSchema (unit)', () => {
       expect(text).toMatch(/title|60/i)
     }
   })
+
+  it('edit schema requires price and currency when isPaid=true', () => {
+    const result = editEventSchema.safeParse({
+      ...BASE,
+      isPaid: true,
+      priceAmount: '',
+      currency: '',
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      const text = JSON.stringify(result.error.issues)
+      expect(text).toMatch(/price|currency/i)
+    }
+  })
+
 })

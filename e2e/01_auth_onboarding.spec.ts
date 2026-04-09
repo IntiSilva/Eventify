@@ -30,7 +30,7 @@ test.describe('01 — Onboarding flow', () => {
     await expect(page).toHaveURL(/\/$/);
   });
 
-  test('user without onboarding as organizer cannot finish without phone', async ({ page }) => {
+  test('user without onboarding as organizer cannot continue past phone without a valid number', async ({ page }) => {
     test.skip(!is('user-noonboarding'));
 
     await page.goto('/onboarding');
@@ -57,9 +57,9 @@ test.describe('01 — Onboarding flow', () => {
     await phone.click();
     await phone.press('Tab');
 
-    // For organizer, if phone is invalid/empty, Begin MUST NOT appear
-    const begin = page.getByTestId('onb-begin');
-    await expect(begin).toHaveCount(0);
+    // Step 4 should not render until the phone number is valid and saved
+    await expect(page.getByTestId('onb-stripe-step')).toHaveCount(0);
+    await expect(page.getByTestId('onb-next')).toHaveCount(0);
 
     // User should remain on /onboarding
     await expect(page).toHaveURL(/\/onboarding/);
@@ -96,7 +96,7 @@ test.describe('01 — Onboarding flow', () => {
     await expect(page.getByTestId('onb-next')).toBeVisible();
   });
 
-  test('user without onboarding completes organizer flow with phone (happy path)', async ({ page }) => {
+  test('user without onboarding reaches the organizer Stripe step and can skip it', async ({ page }) => {
     test.skip(!is('user-noonboarding'));
 
     await page.goto('/onboarding');
@@ -134,17 +134,32 @@ test.describe('01 — Onboarding flow', () => {
     await phone.fill('+5491123456789');
     await phone.press('Tab');
 
-    // Now the Begin button (final submit) should appear
-    const begin = page.getByTestId('onb-begin');
-    await expect(begin).toBeVisible();
-    await begin.click();
+    await expect(nextBtn).toBeVisible();
+    await nextBtn.click();
+
+    await expect(page.getByTestId('onb-stripe-step')).toBeVisible();
+    await expect(page.getByText(/sell tickets with stripe/i)).toBeVisible();
+    await expect(page.getByTestId('onb-connect-copy')).toBeVisible();
+
+    await page.getByTestId('onb-back').click();
+    await expect(phone).toBeVisible();
+    await expect(page.getByTestId('onb-next')).toBeVisible();
+    await page.getByTestId('onb-next').click();
+
+    await expect(page.getByTestId('onb-stripe-step')).toBeVisible();
+    await expect(page.getByText(/an unexpected error occurred/i)).toHaveCount(0);
+
+    const skipForNow = page.getByTestId('onb-skip-connect');
+    await expect(skipForNow).toBeVisible();
+    await expect(page.getByTestId('onb-connect-stripe')).toBeVisible();
+    await skipForNow.click();
 
     // Success toast from the server action
     await expect(page.getByText(/profile updated successfully/i))
       .toBeVisible({ timeout: 15000 });
 
-    // After a successful onboarding, user should end up on Home
-    await expect(page).toHaveURL(/\/$/, {timeout: 20000});
+    // After a successful organizer onboarding, the user should land on the organizer dashboard
+    await expect(page).toHaveURL(/\/organizer$/, {timeout: 20000});
   });
 
 });

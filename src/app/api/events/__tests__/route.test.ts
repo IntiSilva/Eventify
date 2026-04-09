@@ -8,19 +8,13 @@ const h = vi.hoisted(() => ({
       count: vi.fn(),
     },
   },
-  cleanup: {
-    deleteExpiredEvents: vi.fn(),
-  },
+  auth: vi.fn(),
 }))
 
 // --- Mocks ---------------------------------------------------------------
 // Prisma client
 vi.mock('@/lib/prisma', () => ({ prisma: h.prisma }))
-
-// Cleanup (we don't want the test to do any real deletion)
-vi.mock('@/lib/cleanup', () => ({
-  deleteExpiredEvents: h.cleanup.deleteExpiredEvents,
-}))
+vi.mock('@clerk/nextjs/server', () => ({ auth: h.auth }))
 
 // Constants used by the route (keep PAGE_SIZE_MAIN deterministic)
 vi.mock('@/lib/constants', () => ({
@@ -57,7 +51,23 @@ describe('/api/events route (minimal integration)', () => {
   beforeEach(() => {
     h.prisma.event.findMany.mockReset()
     h.prisma.event.count.mockReset()
-    h.cleanup.deleteExpiredEvents.mockReset()
+    h.auth.mockReset()
+    h.auth.mockResolvedValue({ userId: 'clerk_user_1' })
+  })
+
+  it('returns 401 when unauthenticated and does not hit Prisma', async () => {
+    h.auth.mockResolvedValueOnce({ userId: null })
+
+    const res = await GET(new Request('http://localhost/api/events?page=1&limit=2'))
+    const { status, body } = await jsonOf(res)
+
+    expect(status).toBe(401)
+    expect(body).toEqual({
+      success: false,
+      error: 'Unauthorized',
+    })
+    expect(h.prisma.event.findMany).not.toHaveBeenCalled()
+    expect(h.prisma.event.count).not.toHaveBeenCalled()
   })
 
   it('uses viewer-day mode when date + viewTz are present (where.date gte/lt, stable orderBy, skip/take)', async () => {
@@ -77,13 +87,11 @@ describe('/api/events route (minimal integration)', () => {
     const res = await GET(req)
     const { status, body } = await jsonOf(res)
 
-    // Assert: cleanup invoked once
-    expect(h.cleanup.deleteExpiredEvents).toHaveBeenCalledTimes(1)
-
     // Assert: Prisma called with viewer-day window
     expect(h.prisma.event.findMany).toHaveBeenCalledTimes(1)
     const args = h.prisma.event.findMany.mock.calls[0][0]
 
+    expect(args.where?.archivedAt).toBeNull()
     expect(args.where?.date?.gte instanceof Date).toBe(true)
     expect(args.where?.date?.lt instanceof Date).toBe(true)
     expect(args.where?.eventLocalDateKey).toBeUndefined()
@@ -122,9 +130,8 @@ describe('/api/events route (minimal integration)', () => {
     const res = await GET(req)
     const { status, body } = await jsonOf(res)
 
-    expect(h.cleanup.deleteExpiredEvents).toHaveBeenCalledTimes(1)
-
     const args = h.prisma.event.findMany.mock.calls[0][0]
+    expect(args.where?.archivedAt).toBeNull()
     expect(args.where?.id).toEqual({ notIn: ['evt_a', 'evt_b'] })
     expect(args.orderBy).toEqual([{ date: 'asc' }, { id: 'asc' }])
 
@@ -218,6 +225,70 @@ describe('/api/events route (minimal integration)', () => {
 
     const expected = rows.map(r => ({ ...r, date: r.date.toISOString() }))
 
+    expect(status).toBe(200)
+    expect(body).toEqual({
+      success: true,
+      data: expected,
+      metadata: {
+        totalEvents: rows.length,
+        totalPages: 1,
+        currentPage: 1,
+        eventsPerPage: 6,
+      },
+    })
+  })
+
+  it('maps paid=paid to where.isPaid=true', async () => {
+    const rows = [
+      {
+        id: 'evt_paid_1',
+        title: 'Paid event',
+        date: new Date('2099-04-01T10:00:00Z'),
+        isPaid: true,
+      },
+    ]
+    h.prisma.event.findMany.mockResolvedValueOnce(rows)
+    h.prisma.event.count.mockResolvedValueOnce(rows.length)
+
+    const res = await GET(new Request('http://localhost/api/events?paid=paid&page=1&limit=6'))
+    const { status, body } = await jsonOf(res)
+
+    const args = h.prisma.event.findMany.mock.calls[0][0]
+    expect(args.where?.isPaid).toBe(true)
+
+    const expected = rows.map((r) => ({ ...r, date: r.date.toISOString() }))
+    expect(status).toBe(200)
+    expect(body).toEqual({
+      success: true,
+      data: expected,
+      metadata: {
+        totalEvents: rows.length,
+        totalPages: 1,
+        currentPage: 1,
+        eventsPerPage: 6,
+      },
+    })
+  })
+
+  it('maps paid=free to where.isPaid=false', async () => {
+    const rows = [
+      {
+        id: 'evt_free_1',
+        title: 'Free event',
+        date: new Date('2099-04-03T10:00:00Z'),
+        isPaid: false,
+      },
+    ]
+    h.prisma.event.findMany.mockResolvedValueOnce(rows)
+    h.prisma.event.count.mockResolvedValueOnce(rows.length)
+
+    const res = await GET(new Request('http://localhost/api/events?paid=free&page=1&limit=6'))
+    const { status, body } = await jsonOf(res)
+
+    const args = h.prisma.event.findMany.mock.calls[0][0]
+    expect(args.where?.isPaid).toBe(false)
+
+    const expected = rows.map((r) => ({ ...r, date: r.date.toISOString() }))
     expect(status).toBe(200)
     expect(body).toEqual({
       success: true,
