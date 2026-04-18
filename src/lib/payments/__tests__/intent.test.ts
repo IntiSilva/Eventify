@@ -95,6 +95,33 @@ function expectAlreadyPaid(
   return result;
 }
 
+function buildPaidRsvpIdempotencyKey({
+  eventId,
+  userId,
+  priceVersionId,
+  payoutTarget,
+  intentModeKey = 'default',
+  repurchasePaymentId,
+  recoveryIntentId,
+}: {
+  eventId: string;
+  userId: string;
+  priceVersionId: string;
+  payoutTarget: PaymentPayoutTarget;
+  intentModeKey?: 'default' | 'non_redirect';
+  repurchasePaymentId?: string;
+  recoveryIntentId?: string;
+}): string {
+  const repurchaseDiscriminator = repurchasePaymentId
+    ? `repurchase_${repurchasePaymentId}`
+    : '';
+  const baseKey =
+    `paid_rsvp_${eventId}_${userId}_${priceVersionId}_${payoutTarget}_${intentModeKey}` +
+    (repurchaseDiscriminator ? `_${repurchaseDiscriminator}` : '');
+
+  return recoveryIntentId ? `${baseKey}_recovery_${recoveryIntentId}` : baseKey;
+}
+
 const makeEvent = (id: string, priceCents = 5000) => ({
   id,
   title: 'Test Event',
@@ -350,7 +377,13 @@ describe('createOrReusePaymentIntentForEvent', () => {
       expect(h.stripe.paymentIntents.create).toHaveBeenCalledWith(
         expect.any(Object),
         expect.objectContaining({
-          idempotencyKey: `paid_rsvp_${eventId}_${userId}_pv_current_${PaymentPayoutTarget.organizer}_repurchase_${refundedPaymentId}`,
+          idempotencyKey: buildPaidRsvpIdempotencyKey({
+            eventId,
+            userId,
+            priceVersionId: 'pv_current',
+            payoutTarget: PaymentPayoutTarget.organizer,
+            repurchasePaymentId: refundedPaymentId,
+          }),
         })
       );
       expect(h.prisma.payment.create).toHaveBeenCalledWith(
@@ -683,14 +716,27 @@ describe('createOrReusePaymentIntentForEvent', () => {
         1,
         expect.any(Object),
         expect.objectContaining({
-          idempotencyKey: `paid_rsvp_${eventId}_${userId}_pv_current_${PaymentPayoutTarget.organizer}_repurchase_${refundedPaymentId}`,
+          idempotencyKey: buildPaidRsvpIdempotencyKey({
+            eventId,
+            userId,
+            priceVersionId: 'pv_current',
+            payoutTarget: PaymentPayoutTarget.organizer,
+            repurchasePaymentId: refundedPaymentId,
+          }),
         })
       );
       expect(h.stripe.paymentIntents.create).toHaveBeenNthCalledWith(
         2,
         expect.any(Object),
         expect.objectContaining({
-          idempotencyKey: `paid_rsvp_${eventId}_${userId}_pv_current_${PaymentPayoutTarget.organizer}_repurchase_${refundedPaymentId}_recovery_pi_conflict`,
+          idempotencyKey: buildPaidRsvpIdempotencyKey({
+            eventId,
+            userId,
+            priceVersionId: 'pv_current',
+            payoutTarget: PaymentPayoutTarget.organizer,
+            repurchasePaymentId: refundedPaymentId,
+            recoveryIntentId: 'pi_conflict',
+          }),
         })
       );
     });
@@ -818,7 +864,12 @@ describe('createOrReusePaymentIntentForEvent', () => {
       );
       expect(options).toEqual(
         expect.objectContaining({
-          idempotencyKey: `paid_rsvp_${eventId}_${userId}_pv_current_${PaymentPayoutTarget.platform}`,
+          idempotencyKey: buildPaidRsvpIdempotencyKey({
+            eventId,
+            userId,
+            priceVersionId: 'pv_current',
+            payoutTarget: PaymentPayoutTarget.platform,
+          }),
         })
       );
       expect(h.prisma.payment.create).toHaveBeenCalledWith(
@@ -836,7 +887,12 @@ describe('createOrReusePaymentIntentForEvent', () => {
     it('uses version-aware idempotency key and metadata from current price version', async () => {
       const eventId = 'evt_1';
       const userId = 'user_123';
-      const expectedIdempotencyKey = `paid_rsvp_${eventId}_${userId}_pv_current_${PaymentPayoutTarget.organizer}`;
+      const expectedIdempotencyKey = buildPaidRsvpIdempotencyKey({
+        eventId,
+        userId,
+        priceVersionId: 'pv_current',
+        payoutTarget: PaymentPayoutTarget.organizer,
+      });
 
       h.prisma.event.findUnique.mockResolvedValue(makeEvent(eventId));
       h.prisma.payment.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
