@@ -73,6 +73,8 @@ jobs:
 
       - name: Reset + Seed E2E DB and Run Playwright
         run: npm run e2e
+        env:
+          DEBUG: pw:webserver
 
       - name: Upload Playwright report
         if: always()
