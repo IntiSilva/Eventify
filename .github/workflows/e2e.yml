@@ -71,8 +71,13 @@ jobs:
           E2E_ADMIN_PHONE=${{ secrets.E2E_ADMIN_PHONE }}
           EOF
 
+      - name: Build app
+        run: dotenv -e .env.e2e -- npm run build
+
       - name: Reset + Seed E2E DB and Run Playwright
         run: npm run e2e
+        env:
+          DEBUG: pw:webserver
 
       - name: Upload Playwright report
         if: always()
