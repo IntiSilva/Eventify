@@ -72,7 +72,7 @@ jobs:
           EOF
 
       - name: Build app
-        run: dotenv -e .env.e2e -- npm run build
+        run: npx dotenv -e .env.e2e -- npm run build
 
       - name: Reset + Seed E2E DB and Run Playwright
         run: npm run e2e
