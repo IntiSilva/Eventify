@@ -44,13 +44,12 @@ test.describe('04 — Home list filters (search + category + advanced filters)',
     const card = await searchEventByTitleFromHome(page, title);
     await expect(card).toBeVisible({ timeout: 10_000 });
 
-    // 2) Clear Searchbar text so the filter is ONLY by category
-    await clearSearchbarSearchText(page);
-
-    // 3) Apply category filter = Music
+    // 2) Keep title search active and apply category filter = Music.
+    // This validates that category filtering does not exclude the seeded event
+    // while avoiding broad-result pagination drift in the assertion.
     await applyCategoryFilter(page, 'Music');
 
-    // 4) Find the card again by title under the applied category filter
+    // 3) Find the same card by title under search + category filters
     const filteredCard = page
       .getByTestId('arc-card-root')
       .filter({
@@ -79,13 +78,12 @@ test.describe('04 — Home list filters (search + category + advanced filters)',
       const card = await searchEventByTitleFromHome(page, title);
       await expect(card).toBeVisible({ timeout: 10_000 });
 
-      // 2) Clear Searchbar text so the filter is ONLY by date
-      await clearSearchbarSearchText(page);
-
-      // 3) Apply advanced date filter = tomorrow
+      // 2) Keep title search active and apply advanced date filter = tomorrow.
+      // This validates date filtering on the seeded event without depending on
+      // which page broad date results happen to render first.
       await applyAdvancedDateFilterForTomorrow(page);
 
-      // 4) Find the card again by title under the date filter
+      // 3) Find the same card by title under search + date filters
       const filteredCard = page
         .getByTestId('arc-card-root')
         .filter({
